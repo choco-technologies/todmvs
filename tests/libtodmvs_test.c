@@ -311,7 +311,7 @@ DMOD_TEST_STEP(libtodmvs_writes_behaviour)
     DMOD_TEST_EXPECT_TRUE(has(v, ".timer  16, animate\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @home, 10, 10, 20, 20\n        OPACITY $home_alpha\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @tile, 0, 0, 20, 20\n        ON      CLICK, h1\n"));
-    DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @window, 0, $window_y, 100, 80\n        FILL    #101010\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @window, 0, $window_y, 100, 80, OPAQUE\n        FILL    #101010\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "h1:\n        JNE     $open, 0, .i1\n        SET     $window_y_from, $window_y\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "        SET     $home_alpha, 77\n        TOGGLE  $open\n.i1:\n        RET\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "ease1:\n"));

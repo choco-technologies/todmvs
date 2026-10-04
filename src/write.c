@@ -24,6 +24,16 @@
 #define MAX_BOX_NAMES   1024u
 
 #define MAX_EASINGS     8u
+#define MAX_MERGES      64u
+
+/* A translucent fill painted right over an opaque one of its rectangle: one opaque fill of both */
+typedef struct
+{
+    const dmvsi_node_t* under;          /* Not written */
+    const dmvsi_node_t* over;           /* Written with `paint` */
+    dmvsi_paint_t       paint;
+    dmvsi_unit_t        radius;
+} merge_t;
 #define EASE_STEPS      16u
 
 /* What the writer knows of a variable */
@@ -63,6 +73,9 @@ typedef struct
     easing_t                easings[MAX_EASINGS];
     uint32_t                easing_count;
     bool                    animates;
+    merge_t                 merges[MAX_MERGES];
+    uint32_t                merge_count;
+    uint32_t                show_labels;
 } writer_t;
 
 /* ---- Names ---- */
@@ -306,6 +319,8 @@ static void declare_gradients(writer_t* w, text_t* t)
     }
 }
 
+static const char* var_name(const writer_t* w, dmvsi_var_t var);
+
 /* ---- Instructions ---- */
 
 /* "        RECT    " - the mnemonic in its column */
@@ -502,6 +517,90 @@ static bool group_opaque(const dmvsi_node_t* n, const box_t* rect)
     return box_covers(&b, rect) && paint_opaque(&first->u.fill.paint);
 }
 
+
+/* ---- Fills over fills ---- */
+
+/* c over an opaque bg */
+static uint32_t over(uint32_t c, uint32_t bg)
+{
+    uint32_t a = c >> 24, out = 0xFF000000u;
+    for (int s = 0; s < 24; s += 8)
+    {
+        uint32_t x = (c >> s) & 0xFFu, y = (bg >> s) & 0xFFu;
+        out |= (((x * a + y * (255U - a)) + 127U) / 255U) << s;
+    }
+    return out;
+}
+
+static bool translucent(const dmvsi_paint_t* p)
+{
+    if (p->kind == DMVSI_PAINT_COLOR)
+        return (p->color >> 24) != 0xFFu;
+    for (uint32_t i = 0; i < p->count; i++)
+    {
+        if ((p->stops[i].color >> 24) != 0xFFu)
+            return true;
+    }
+    return false;
+}
+
+/* The leaves in painting order: a translucent fill right after an opaque color of the same
+ * rectangle - nothing between them, in no group of its own that fades or moves - is merged:
+ * the screen gets the blend as one opaque fill (an opaque gradient is dithered on RGB565, a
+ * translucent one is not), and one fill less */
+static void find_merges(writer_t* w, const dmvsi_node_t* n, const dmvsi_node_t** previous)
+{
+    for (; n != NULL; n = n->next)
+    {
+        if (n->kind == DMVSI_NODE_GROUP)
+        {
+            bool own = n->u.group.opacity != 255 || n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0 ||
+                       n->bind[DMVSI_BIND_OPACITY] != 0 || n->show_var[0] != 0;
+            if (own)
+                *previous = NULL;
+            find_merges(w, n->first, previous);
+            if (own)
+                *previous = NULL;
+            continue;
+        }
+        const dmvsi_node_t* under = *previous;
+        *previous = n;
+        if (n->kind != DMVSI_NODE_RECT || under == NULL || under->kind != DMVSI_NODE_RECT || w->merge_count >= MAX_MERGES)
+            continue;
+        const dmvsi_fill_t* a = &under->u.fill;
+        const dmvsi_fill_t* b = &n->u.fill;
+        box_t ra = snap_rect(&a->rect), rb = snap_rect(&b->rect);
+        if (a->paint.kind != DMVSI_PAINT_COLOR || (a->paint.color >> 24) != 0xFFu || !translucent(&b->paint) ||
+            !box_same(&ra, &rb) || snap(b->radius) > snap(a->radius))
+            continue;
+        merge_t* m = &w->merges[w->merge_count++];
+        m->under = under;
+        m->over = n;
+        m->paint = b->paint;
+        m->radius = a->radius;
+        if (b->paint.kind == DMVSI_PAINT_COLOR)
+            m->paint.color = over(b->paint.color, a->paint.color);
+        for (uint32_t i = 0; i < b->paint.count; i++)
+            m->paint.stops[i].color = over(b->paint.stops[i].color, a->paint.color);
+        *previous = NULL;
+    }
+}
+
+static const merge_t* merged(const writer_t* w, const dmvsi_node_t* n, bool* skip)
+{
+    for (uint32_t i = 0; i < w->merge_count; i++)
+    {
+        if (w->merges[i].under == n)
+        {
+            *skip = true;
+            return NULL;
+        }
+        if (w->merges[i].over == n)
+            return &w->merges[i];
+    }
+    return NULL;
+}
+
 static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* origin, const box_t* clip);
 
 static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin, const box_t* clip)
@@ -515,7 +614,10 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
         w->r.skipped++;
         return;
     }
-    if (!clips && g->opacity == 255 && !scrolls && !bound && n->click == 0)
+    /* A clip as large as what clips already (the screen, its box) clips nothing: no box for it */
+    box_t given = snap_rect(&g->rect);
+    bool needless = clips && box_covers(&given, clip) && box_covers(&given, origin);
+    if ((!clips || needless) && g->opacity == 255 && !scrolls && !bound && n->click == 0)
     {
         write_nodes(w, n->first, origin, clip);
         return;
@@ -543,7 +645,7 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
             text_fmt(&w->code, "%d, ", (int)v[k]);
     }
     numbers(w, v + 2, 2);
-    if (!bound && group_opaque(n, &rect))
+    if (n->bind[DMVSI_BIND_OPACITY] == 0 && group_opaque(n, &rect))  /* Moving, it covers its box all the same */
         text_str(&w->code, ", OPAQUE");
     text_str(&w->code, "\n");
     w->r.boxes++;
@@ -596,14 +698,39 @@ static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* ori
         switch (n->kind)
         {
             case DMVSI_NODE_GROUP:
+            {
+                /* Shown only on its conditions: jumped over else */
+                uint32_t label = 0;
+                for (uint32_t k = 0; k < DMVSI_MAX_SHOW && n->show_var[k] != 0; k++)
+                {
+                    if (label == 0)
+                        label = ++w->show_labels;
+                    const char* name = (n->show_var[k] == DMVSI_VAR_PRESSED) ? "box.pressed" : var_name(w, n->show_var[k]);
+                    text_fmt(&w->code, "        JNE     $%s, %d, .g%u\n", name, (int)n->show_value[k], (unsigned)label);
+                }
                 write_group(w, n, origin, clip);
+                if (label != 0)
+                    text_fmt(&w->code, ".g%u:\n", (unsigned)label);
                 continue;
+            }
             case DMVSI_NODE_RECT:
+            {
+                bool skip = false;
+                const merge_t* m = merged(w, n, &skip);
+                if (skip)
+                    continue;                   /* Painted with the fill over it */
                 if (!paint_visible(&n->u.fill.paint))
                     break;
-                write_fill(w, &n->u.fill, origin);
+                dmvsi_fill_t f = n->u.fill;
+                if (m != NULL)
+                {
+                    f.paint = m->paint;
+                    f.radius = m->radius;
+                }
+                write_fill(w, &f, origin);
                 w->r.instructions++;
                 continue;
+            }
             case DMVSI_NODE_FRAME:
                 if (!paint_visible(&n->u.frame.paint))
                     break;
@@ -865,6 +992,8 @@ static int write_view(writer_t* w, const char* output, const char* source)
         memset(w->vars, 0, w->var_count * sizeof(var_info_t));
     }
     find_animations(w);
+    const dmvsi_node_t* previous = NULL;
+    find_merges(w, root->first, &previous);
     box_t screen = { 0, 0, width, height };
     write_nodes(w, root->first, &screen, &screen);
     if (w->error != 0)

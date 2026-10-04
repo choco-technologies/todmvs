@@ -38,6 +38,12 @@ Both run on a PC (at build time) and on a device.
   screen - a window that slides in), a clicked one has `ON CLICK`; a handler
   is a label of `SET`, `TOGGLE` and jumps. An animated variable moves each
   frame (`.timer 16`) along its CSS easing - a `cubic-bezier` made 16 lines.
+  A group shown on conditions is jumped over otherwise (`JNE $v, 1, ...`,
+  `$box.pressed` for a pressed look).
+- A clip as large as what clips already (the screen) is no box; a box that
+  moves stays `OPAQUE` - dmview draws nothing beneath it.
+- A translucent fill right over an opaque one of its rectangle is one opaque
+  fill of both: dithered on RGB565, where a translucent gradient bands.
 
 ## Fonts and images
 
