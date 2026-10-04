@@ -1,5 +1,6 @@
 # Include dynamically generated versions list from latest release
 $include https://github.com/choco-technologies/todmvs/releases/download/vlatest/versions.dmm
 
-# Module entry with version placeholder - expanded by $version-available
+# Module entries with version placeholder - expanded by $version-available
+libtodmvs https://github.com/choco-technologies/todmvs/releases/download/v<version>/libtodmvs-v<version>-<arch_name>.zip
 todmvs https://github.com/choco-technologies/todmvs/releases/download/v<version>/todmvs-v<version>-<arch_name>.zip

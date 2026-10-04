@@ -30,13 +30,15 @@ jobs:
         run: |
           echo "Checking for module files..."
           ls -lh build/dmf/
+          test -f build/dmf/libtodmvs.dmf
+          test -f build/dmf/libtodmvs_version.txt
+          test -f build/dmf/test_libtodmvs.dmf
           test -f build/dmf/todmvs.dmf
           test -f build/dmf/todmvs_version.txt
-          test -f build/dmf/test_todmvs.dmf
           echo "Module files present"
 
       - name: Run tests with dmod_loader
         run: |
           export DMOD_DMF_DIR=$(pwd)/build/dmf
-          dmf-get install -d ${DMOD_DMF_DIR}/test_todmvs-local.dmd -y
-          dmod_loader build/dmf/test_todmvs.dmf
+          dmf-get install -d ${DMOD_DMF_DIR}/test_libtodmvs-local.dmd -y
+          dmod_loader build/dmf/test_libtodmvs.dmf
