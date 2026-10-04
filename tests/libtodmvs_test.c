@@ -236,3 +236,84 @@ DMOD_TEST_STEP(libtodmvs_reports_what_it_cannot_write)
     dmvsi_free(doc);
     DMOD_TEST_EXPECT_EQ(libtodmvs_convert_file(TEST_FILE("missing.html"), TEST_FILE("x.dmvs"), NULL, NULL, NULL), -ENOENT);
 }
+
+DMOD_TEST_STEP(libtodmvs_writes_behaviour)
+{
+    dmvsi_doc_t doc = dmvsi_new();
+    dmvsi_group_t group;
+    dmvsi_fill_t fill;
+    (void)dmvsi_set_view(doc, "screens", 100, 80);
+    dmvsi_var_t y = dmvsi_add_var(doc, "window-y", DMVSI_PX(80));        /* Below the screen */
+    dmvsi_var_t alpha = dmvsi_add_var(doc, "home-alpha", 255);
+    dmvsi_var_t open = dmvsi_add_var(doc, "open", 0);
+
+    /* A tile that opens the window */
+    dmvsi_action_t actions[5];
+    memset(actions, 0, sizeof(actions));
+    actions[0].kind = DMVSI_ACT_IF_EQ;
+    actions[0].var = open;
+    actions[1].kind = DMVSI_ACT_ANIMATE;
+    actions[1].var = y;
+    actions[1].value = 0;
+    actions[1].duration = 300;
+    actions[1].easing[0] = 250;
+    actions[1].easing[1] = 800;
+    actions[1].easing[2] = 250;
+    actions[1].easing[3] = 1000;
+    actions[2].kind = DMVSI_ACT_SET;
+    actions[2].var = alpha;
+    actions[2].value = 77;
+    actions[3].kind = DMVSI_ACT_TOGGLE;
+    actions[3].var = open;
+    actions[4].kind = DMVSI_ACT_END;
+    dmvsi_handler_t h = dmvsi_add_handler(doc, actions, 5);
+
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.name = "home";
+    (void)dmvsi_begin_group(doc, &group);
+    (void)dmvsi_bind(doc, DMVSI_BIND_OPACITY, alpha);
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.name = "tile";
+    group.rect.x = DMVSI_PX(10);
+    group.rect.y = DMVSI_PX(10);
+    group.rect.w = DMVSI_PX(20);
+    group.rect.h = DMVSI_PX(20);
+    (void)dmvsi_begin_group(doc, &group);
+    (void)dmvsi_on_click(doc, h);
+    memset(&fill, 0, sizeof(fill));
+    rect(&fill.rect, 12, 12, 16, 16);
+    fill.paint.color = 0xFF3D85F5u;
+    (void)dmvsi_add_fill(doc, &fill);
+    (void)dmvsi_end_group(doc);
+    (void)dmvsi_end_group(doc);
+
+    /* The window, off the screen until it is opened */
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.flags = DMVSI_GROUP_CLIP;
+    group.name = "window";
+    rect(&group.rect, 0, 80, 100, 80);
+    (void)dmvsi_begin_group(doc, &group);
+    (void)dmvsi_bind(doc, DMVSI_BIND_Y, y);
+    rect(&fill.rect, 0, 80, 100, 80);
+    fill.paint.color = 0xFF101010u;
+    (void)dmvsi_add_fill(doc, &fill);
+    (void)dmvsi_end_group(doc);
+
+    libtodmvs_result_t r;
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("screens.dmvs"), NULL, &r), 0);
+    dmvsi_free(doc);
+    const char* v = read_file(TEST_FILE("screens.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $window_y, int, 80\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $window_y_to, int, 0\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".timer  16, animate\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @home, 10, 10, 20, 20\n        OPACITY $home_alpha\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @tile, 0, 0, 20, 20\n        ON      CLICK, h1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        BOX     @window, 0, $window_y, 100, 80\n        FILL    #101010\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h1:\n        JNE     $open, 0, .i1\n        SET     $window_y_from, $window_y\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        SET     $home_alpha, 77\n        TOGGLE  $open\n.i1:\n        RET\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "ease1:\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("screens.dmvs"), TEST_FILE("screens.dmv")));
+}

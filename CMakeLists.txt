@@ -60,7 +60,7 @@ dmod_add_library(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
 
 # dmvsi: the documents and their converters
 dmod_link_modules(${DMOD_MODULE_NAME}
-    dmvsi@>=0.1
+    dmvsi@>=0.2
 )
 
 target_include_directories(${DMOD_MODULE_NAME} PRIVATE

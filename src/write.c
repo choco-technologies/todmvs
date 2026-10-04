@@ -23,6 +23,25 @@
 #define MAX_NAME        48u
 #define MAX_BOX_NAMES   1024u
 
+#define MAX_EASINGS     8u
+#define EASE_STEPS      16u
+
+/* What the writer knows of a variable */
+typedef struct
+{
+    uint8_t     bound;                  /* DMVSI_BIND_* + 1 of the group it is bound to, 0: none */
+    int32_t     origin;                 /* X / Y: the pixel its parent box starts at (values are relative to it) */
+    int32_t     shift;                  /* X / Y: where the box starts, from its group's rectangle (what it holds) */
+    bool        animated;
+} var_info_t;
+
+/* A cubic-bezier easing, as the points of its piecewise linear approximation */
+typedef struct
+{
+    int16_t     curve[4];
+    int32_t     y[EASE_STEPS + 1];      /* 0 ... 1000, at x = i / EASE_STEPS */
+} easing_t;
+
 typedef struct
 {
     dmvsi_doc_t             doc;
@@ -39,6 +58,11 @@ typedef struct
     bool                    no_assets;
     int                     error;
     libtodmvs_result_t      r;
+    var_info_t*             vars;               /* Of the document's variables, by index */
+    uint32_t                var_count;
+    easing_t                easings[MAX_EASINGS];
+    uint32_t                easing_count;
+    bool                    animates;
 } writer_t;
 
 /* ---- Names ---- */
@@ -318,7 +342,9 @@ static box_t extent(const dmvsi_node_t* n)
         return text_box(&n->u.text);
     if (n->kind != DMVSI_NODE_GROUP || (n->u.group.flags & DMVSI_GROUP_CLIP) != 0)
         return snap_rect(&n->bounds);
-    box_t all = { 0, 0, 0, 0 };
+    box_t all = snap_rect(&n->u.group.rect);       /* At least the rectangle it was given (a button's) */
+    if (box_empty(&all))
+        all.x0 = all.y0 = all.x1 = all.y1 = 0;
     for (const dmvsi_node_t* c = n->first; c != NULL; c = c->next)
     {
         box_t e = extent(c);
@@ -483,12 +509,13 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
     const dmvsi_group_t* g = &n->u.group;
     bool clips = (g->flags & DMVSI_GROUP_CLIP) != 0;
     bool scrolls = g->scroll_w > 0 && g->scroll_h > 0;
-    if (g->opacity == 0)
+    bool bound = n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0 || n->bind[DMVSI_BIND_OPACITY] != 0;
+    if (g->opacity == 0 && n->bind[DMVSI_BIND_OPACITY] == 0)
     {
         w->r.skipped++;
         return;
     }
-    if (!clips && g->opacity == 255 && !scrolls)
+    if (!clips && g->opacity == 255 && !scrolls && !bound && n->click == 0)
     {
         write_nodes(w, n->first, origin, clip);
         return;
@@ -498,12 +525,30 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
     int32_t v[4] = { rect.x0 - origin->x0, rect.y0 - origin->y0, rect.x1 - rect.x0, rect.y1 - rect.y0 };
     op(w, "BOX");
     text_fmt(&w->code, "@%s, ", box_name(w, g->name));
-    numbers(w, v, 4);
-    if (group_opaque(n, &rect))
+    for (uint32_t k = 0; k < 2U; k++)
+    {
+        /* Its position from a variable: relative to this box's parent, as BOX takes it */
+        dmvsi_var_t var = n->bind[(k == 0) ? DMVSI_BIND_X : DMVSI_BIND_Y];
+        if (var != 0 && var <= w->var_count)
+        {
+            const char* name = NULL;
+            (void)dmvsi_var_at(w->doc, var - 1U, &name, NULL);
+            box_t given = snap_rect(&g->rect);
+            w->vars[var - 1U].bound = (uint8_t)(((k == 0) ? DMVSI_BIND_X : DMVSI_BIND_Y) + 1U);
+            w->vars[var - 1U].origin = (k == 0) ? origin->x0 : origin->y0;
+            w->vars[var - 1U].shift = (k == 0) ? rect.x0 - given.x0 : rect.y0 - given.y0;
+            text_fmt(&w->code, "$%s, ", name);
+        }
+        else
+            text_fmt(&w->code, "%d, ", (int)v[k]);
+    }
+    numbers(w, v + 2, 2);
+    if (!bound && group_opaque(n, &rect))
         text_str(&w->code, ", OPAQUE");
     text_str(&w->code, "\n");
     w->r.boxes++;
-    box_t inside = box_and(*clip, rect);
+    /* A box that moves: what is in it as it is in it, wherever it is */
+    box_t inside = (n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0) ? rect : box_and(*clip, rect);
     if (scrolls)
     {
         int32_t s[2] = { snap(g->scroll_w), snap(g->scroll_h) };
@@ -513,10 +558,24 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
         box_t content = { rect.x0, rect.y0, rect.x0 + s[0], rect.y0 + s[1] };
         inside = content;               /* What can be scrolled into view */
     }
-    if (g->opacity != 255)
+    dmvsi_var_t alpha = n->bind[DMVSI_BIND_OPACITY];
+    if (alpha != 0 && alpha <= w->var_count)
+    {
+        const char* name = NULL;
+        (void)dmvsi_var_at(w->doc, alpha - 1U, &name, NULL);
+        w->vars[alpha - 1U].bound = DMVSI_BIND_OPACITY + 1U;
+        op(w, "OPACITY");
+        text_fmt(&w->code, "$%s\n", name);
+    }
+    else if (g->opacity != 255)
     {
         op(w, "OPACITY");
         text_fmt(&w->code, "%u\n", (unsigned)g->opacity);
+    }
+    if (n->click != 0)
+    {
+        op(w, "ON");
+        text_fmt(&w->code, "CLICK, h%u\n", (unsigned)n->click);
     }
     write_nodes(w, n->first, &rect, &inside);
     text_str(&w->code, "        END\n");
@@ -528,7 +587,8 @@ static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* ori
     {
         box_t e = extent(n);
         box_t seen = box_and(e, *clip);
-        if (box_empty(&seen))
+        bool moves = n->kind == DMVSI_NODE_GROUP && (n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0);
+        if (box_empty(&seen) && !moves)         /* A box that moves may come into view */
         {
             w->r.skipped++;
             continue;
@@ -570,6 +630,217 @@ static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* ori
     }
 }
 
+
+/* ---- Behaviour: variables, handlers, animations ---- */
+
+static const char* var_name(const writer_t* w, dmvsi_var_t var)
+{
+    const char* name = "?";
+    (void)dmvsi_var_at(w->doc, var - 1U, &name, NULL);
+    return name;
+}
+
+/* A value of a variable as the view holds it: a position relative to its box's parent, in pixels */
+static int32_t view_value(const writer_t* w, dmvsi_var_t var, int32_t value)
+{
+    const var_info_t* v = &w->vars[var - 1U];
+    if (v->bound == DMVSI_BIND_X + 1U || v->bound == DMVSI_BIND_Y + 1U)
+        return snap(value) + v->shift - v->origin;
+    if (v->bound == DMVSI_BIND_OPACITY + 1U)
+        return (value < 0) ? 0 : (value > 255) ? 255 : value;
+    return value;
+}
+
+/* The cubic-bezier of CSS at x (0 ... 1): its y, by the t that gives x */
+static double bezier_at(const int16_t* c, double x)
+{
+    double x1 = c[0] / 1000.0, y1 = c[1] / 1000.0, x2 = c[2] / 1000.0, y2 = c[3] / 1000.0;
+    double lo = 0.0, hi = 1.0, t = x;
+    for (int i = 0; i < 40; i++)
+    {
+        t = (lo + hi) / 2.0;
+        double bx = 3.0 * (1.0 - t) * (1.0 - t) * t * x1 + 3.0 * (1.0 - t) * t * t * x2 + t * t * t;
+        if (bx < x)
+            lo = t;
+        else
+            hi = t;
+    }
+    return 3.0 * (1.0 - t) * (1.0 - t) * t * y1 + 3.0 * (1.0 - t) * t * t * y2 + t * t * t;
+}
+
+/* The easing's number (1 ...), made when it is new */
+static uint32_t easing(writer_t* w, const int16_t* curve)
+{
+    for (uint32_t i = 0; i < w->easing_count; i++)
+    {
+        if (memcmp(w->easings[i].curve, curve, sizeof(w->easings[i].curve)) == 0)
+            return i + 1U;
+    }
+    if (w->easing_count >= MAX_EASINGS)
+        return 1U;                      /* Out of room: the first one */
+    easing_t* e = &w->easings[w->easing_count];
+    memcpy(e->curve, curve, sizeof(e->curve));
+    for (uint32_t k = 0; k <= EASE_STEPS; k++)
+    {
+        double y = bezier_at(curve, (double)k / EASE_STEPS);
+        e->y[k] = (int32_t)(y * 1000.0 + ((y >= 0.0) ? 0.5 : -0.5));
+    }
+    return ++w->easing_count;
+}
+
+/* "        SET     $<a><suffix>, <b>" */
+static void set_op(text_t* t, const char* mnemonic, const char* a, const char* suffix, const char* b)
+{
+    static const char spaces[] = "        ";
+    size_t n = strlen(mnemonic);
+    text_add(t, spaces, 8);
+    text_add(t, mnemonic, n);
+    text_add(t, spaces, (n < 8U) ? 8U - n : 1U);
+    text_fmt(t, "$%s%s, %s\n", a, suffix, b);
+}
+
+static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
+{
+    const dmvsi_action_t* actions = NULL;
+    uint32_t count = dmvsi_handler_actions(w->doc, h, &actions);
+    uint32_t stack[16], depth = 0, labels = 0;
+    char value[24];
+    text_fmt(t, "\nh%u:\n", (unsigned)h);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const dmvsi_action_t* a = &actions[i];
+        const char* name = (a->kind != DMVSI_ACT_END) ? var_name(w, a->var) : "";
+        int32_t v = (a->kind != DMVSI_ACT_END) ? view_value(w, a->var, a->value) : 0;
+        Dmod_SnPrintf(value, sizeof(value), "%d", (int)v);
+        switch (a->kind)
+        {
+            case DMVSI_ACT_ANIMATE:
+                if (a->duration > 0)
+                {
+                    char n[48];
+                    Dmod_SnPrintf(n, sizeof(n), "$%s", name);
+                    set_op(t, "SET", name, "_from", n);
+                    set_op(t, "SET", name, "_to", value);
+                    set_op(t, "SET", name, "_t0", "$time");
+                    Dmod_SnPrintf(n, sizeof(n), "%u", (unsigned)a->duration);
+                    set_op(t, "SET", name, "_dur", n);
+                    Dmod_SnPrintf(n, sizeof(n), "%u", (unsigned)easing(w, a->easing));
+                    set_op(t, "SET", name, "_ease", n);
+                    set_op(t, "SET", name, "_on", "1");
+                    break;
+                }
+                /* fall through: no time, at once */
+            case DMVSI_ACT_SET:
+                set_op(t, "SET", name, "", value);
+                if (w->vars[a->var - 1U].animated)
+                    set_op(t, "SET", name, "_on", "0");     /* It stops moving */
+                break;
+            case DMVSI_ACT_TOGGLE:
+                text_fmt(t, "        TOGGLE  $%s\n", name);
+                break;
+            case DMVSI_ACT_IF_EQ:
+            case DMVSI_ACT_IF_NE:
+                if (depth < 16U)
+                    stack[depth++] = ++labels;
+                text_fmt(t, "        %s     $%s, %s, .i%u\n", (a->kind == DMVSI_ACT_IF_EQ) ? "JNE" : "JEQ", name, value,
+                         (unsigned)labels);
+                break;
+            default:
+                if (depth > 0)
+                    text_fmt(t, ".i%u:\n", (unsigned)stack[--depth]);
+                break;
+        }
+    }
+    text_str(t, "        RET\n");
+}
+
+/* Every animated variable moved toward its target, each frame */
+static void write_animations(writer_t* w, text_t* t)
+{
+    text_str(t, "\n; Every running animation one frame further: progress 0 ... 1000, eased\nanimate:\n");
+    for (uint32_t i = 0; i < w->var_count; i++)
+    {
+        if (!w->vars[i].animated)
+            continue;
+        const char* v = var_name(w, (dmvsi_var_t)(i + 1U));
+        text_fmt(t, "        JEQ     $%s_on, 0, .n%u\n", v, (unsigned)i);
+        text_str(t, "        SET     $anim_p, $time\n");
+        text_fmt(t, "        SUB     $anim_p, $%s_t0\n        MUL     $anim_p, 1000\n", v);
+        text_fmt(t, "        DIV     $anim_p, $%s_dur\n        CLAMP   $anim_p, 0, 1000\n", v);
+        for (uint32_t k = 1; k <= w->easing_count; k++)
+        {
+            text_fmt(t, "        JNE     $%s_ease, %u, .e%u_%u\n        CALL    ease%u\n.e%u_%u:\n", v, (unsigned)k,
+                     (unsigned)i, (unsigned)k, (unsigned)k, (unsigned)i, (unsigned)k);
+        }
+        text_fmt(t, "        SET     $%s, $%s_to\n        SUB     $%s, $%s_from\n", v, v, v, v);
+        text_fmt(t, "        MUL     $%s, $anim_e\n        DIV     $%s, 1000\n        ADD     $%s, $%s_from\n", v, v, v, v);
+        text_fmt(t, "        JLT     $anim_p, 1000, .n%u\n        SET     $%s_on, 0\n.n%u:\n", (unsigned)i, v, (unsigned)i);
+    }
+    text_str(t, "        RET\n");
+
+    /* Each easing: its curve as EASE_STEPS lines */
+    for (uint32_t k = 0; k < w->easing_count; k++)
+    {
+        const easing_t* e = &w->easings[k];
+        text_fmt(t, "\n; cubic-bezier(%d, %d, %d, %d) / 1000: $anim_p -> $anim_e\nease%u:\n", (int)e->curve[0],
+                 (int)e->curve[1], (int)e->curve[2], (int)e->curve[3], (unsigned)(k + 1U));
+        for (uint32_t s = 0; s < EASE_STEPS; s++)
+        {
+            int32_t x0 = (int32_t)(s * 1000U / EASE_STEPS), x1 = (int32_t)((s + 1U) * 1000U / EASE_STEPS);
+            text_fmt(t, "        JGE     $anim_p, %d, .s%u\n", (int)x1, (unsigned)s);
+            text_fmt(t, "        SET     $anim_e, $anim_p\n        SUB     $anim_e, %d\n        MUL     $anim_e, %d\n", (int)x0,
+                     (int)(e->y[s + 1U] - e->y[s]));
+            text_fmt(t, "        DIV     $anim_e, %d\n        ADD     $anim_e, %d\n        RET\n.s%u:\n", (int)(x1 - x0),
+                     (int)e->y[s], (unsigned)s);
+        }
+        text_str(t, "        SET     $anim_e, 1000\n        RET\n");
+    }
+}
+
+/* The variables (after the code: the positions are known), the timer of the animations */
+static void declare_behaviour(writer_t* w, text_t* t)
+{
+    if (w->var_count == 0)
+        return;
+    text_str(t, "\n");
+    for (uint32_t i = 0; i < w->var_count; i++)
+    {
+        const char* name = NULL;
+        int32_t initial = 0;
+        (void)dmvsi_var_at(w->doc, i, &name, &initial);
+        text_fmt(t, ".var    $%s, int, %d\n", name, (int)view_value(w, (dmvsi_var_t)(i + 1U), initial));
+        if (w->vars[i].animated)
+        {
+            static const char suffixes[6][6] = { "_from", "_to", "_t0", "_dur", "_ease", "_on" };
+            for (uint32_t k = 0; k < 6U; k++)
+                text_fmt(t, ".var    $%s%s, int, 0\n", name, suffixes[k]);
+        }
+    }
+    if (w->animates)
+        text_str(t, ".var    $anim_p, int, 0\n.var    $anim_e, int, 0\n.timer  16, animate\n");
+}
+
+/* The variables the handlers animate */
+static void find_animations(writer_t* w)
+{
+    const dmvsi_action_t* actions = NULL;
+    for (dmvsi_handler_t h = 1; ; h++)
+    {
+        uint32_t count = dmvsi_handler_actions(w->doc, h, &actions);
+        if (count == 0 && actions == NULL)
+            break;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            if (actions[i].kind == DMVSI_ACT_ANIMATE && actions[i].duration > 0 && actions[i].var <= w->var_count)
+            {
+                w->vars[actions[i].var - 1U].animated = true;
+                w->animates = true;
+            }
+        }
+        actions = NULL;
+    }
+}
+
 /* ---- The view ---- */
 
 static int write_view(writer_t* w, const char* output, const char* source)
@@ -585,6 +856,15 @@ static int write_view(writer_t* w, const char* output, const char* source)
     int ret = name_fonts(w);
     if (ret != 0)
         return ret;
+    while (dmvsi_var_at(w->doc, w->var_count, NULL, NULL))
+        w->var_count++;
+    if (w->var_count > 0)
+    {
+        if ((w->vars = Dmod_Malloc(w->var_count * sizeof(var_info_t))) == NULL)
+            return -ENOMEM;
+        memset(w->vars, 0, w->var_count * sizeof(var_info_t));
+    }
+    find_animations(w);
     box_t screen = { 0, 0, width, height };
     write_nodes(w, root->first, &screen, &screen);
     if (w->error != 0)
@@ -610,10 +890,20 @@ static int write_view(writer_t* w, const char* output, const char* source)
         text_fmt(&t, ".font   %s, \"%s\"\n", w->fonts[i], spec);
     }
     declare_gradients(w, &t);
+    declare_behaviour(w, &t);
     text_str(&t, "\ndraw:\n");
     if (w->code.size != 0)
         text_add(&t, w->code.data, w->code.size);
     text_str(&t, "        RET\n");
+    for (dmvsi_handler_t h = 1; ; h++)
+    {
+        const dmvsi_action_t* actions = NULL;
+        if (dmvsi_handler_actions(w->doc, h, &actions) == 0 && actions == NULL)
+            break;
+        write_handler(w, &t, h);
+    }
+    if (w->animates)
+        write_animations(w, &t);
     ret = (t.failed || w->code.failed) ? -ENOMEM : text_save(&t, output) ? 0 : -EIO;
     text_free(&t);
     return ret;
@@ -650,6 +940,7 @@ dmod_libtodmvs_api_declaration(1.0, int, _write, ( dmvsi_doc_t doc, const char* 
     Dmod_Free(w->gradients);
     Dmod_Free(w->fonts);
     uses_free(w->uses, w->font_count);
+    Dmod_Free(w->vars);
     Dmod_Free(w->boxes);
     Dmod_Free(w);
     return ret;

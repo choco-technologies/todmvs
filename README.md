@@ -33,6 +33,11 @@ Both run on a PC (at build time) and on a device.
   the exact falloff of a blurred disk.
 - Text is `TEXT` on its baseline, in a `.font` of the size and the letter
   spacing it is drawn in.
+- **Behaviour**: the document's variables are `.var`s; a group bound to one
+  is a `BOX` at `$x` / `$y` or with `OPACITY $a` (kept while it is off the
+  screen - a window that slides in), a clicked one has `ON CLICK`; a handler
+  is a label of `SET`, `TOGGLE` and jumps. An animated variable moves each
+  frame (`.timer 16`) along its CSS easing - a `cubic-bezier` made 16 lines.
 
 ## Fonts and images
 
