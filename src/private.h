@@ -65,9 +65,21 @@ uint32_t shadow_pieces(const dmvsi_shadow_t* shadow, piece_t* pieces);
 
 /* ---- Assets (assets.c) ---- */
 
+/* What the view draws of a font of the document: whether it does, and its characters (increasing) */
+typedef struct
+{
+    bool        used;
+    uint32_t*   chars;
+    uint32_t    count;
+    uint32_t    capacity;
+} font_use_t;
+
+int     use_chars(font_use_t* use, const char* text, size_t length);
+void    uses_free(font_use_t* uses, uint32_t count);
+
 /* The .font name and spec of a font: "inter-bold-48" */
 void    font_spec(dmvsi_font_t font, char* spec, size_t size);
-int     write_fonts(dmvsi_doc_t doc, const char* dir, const char* view);
+int     write_fonts(dmvsi_doc_t doc, const char* dir, const char* view, const font_use_t* uses);
 int     copy_file(const char* from, const char* to);
 void    dir_of(const char* path, char* dir, size_t size);
 const char* base_name(const char* path);

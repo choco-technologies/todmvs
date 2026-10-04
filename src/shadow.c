@@ -22,6 +22,9 @@
  * Inset shadows are four strips along the inside of the hole, each with the
  * falloff from its edge in.
  *
+ * Of the blur's falloff only what is visible is painted (MIN_ALPHA): its
+ * faint end would cost as much to draw as the rest.
+ *
  * Doubles without libm: exp, erf and sqrt are approximated here.
  */
 
@@ -31,7 +34,7 @@
 #define CORNER_STOPS    10u
 #define CIRCLE_STOPS    12u
 #define CIRCLE_STEPS    64              /* Of the numeric integral (even, Simpson) */
-#define MIN_ALPHA       2u              /* A piece fainter than this everywhere is left out */
+#define MIN_ALPHA       4u              /* Fainter is not painted: below a step of RGB565's colors over most */
 
 /* ---- Math ---- */
 
@@ -125,6 +128,23 @@ typedef struct
 static double outer(const falloff_t* f, double u)
 {
     return f->alpha * f->scale * phi((f->r - u) / f->sigma);
+}
+
+/* How far from the core an outer shadow is still visible (at most `reach`) */
+static double outer_visible(const falloff_t* f, double reach)
+{
+    double lo = 0.0, hi = reach;
+    if (outer(f, 0.0) < (double)MIN_ALPHA)
+        return 0.0;
+    for (int i = 0; i < 30; i++)
+    {
+        double mid = (lo + hi) / 2.0;
+        if (outer(f, mid) >= (double)MIN_ALPHA)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return hi;
 }
 
 typedef struct
@@ -249,6 +269,19 @@ static double blurred_disk(double radius, double sigma, double d)
 static void circle(list_t* l, double alpha, uint32_t color, double cx, double cy, double radius, double sigma)
 {
     double reach = radius + SIGMAS * sigma;
+    /* As far as it is visible */
+    double lo = 0.0, hi = reach;
+    if (alpha * blurred_disk(radius, sigma, 0.0) < (double)MIN_ALPHA)
+        return;
+    for (int i = 0; i < 24; i++)
+    {
+        double mid = (lo + hi) / 2.0;
+        if (alpha * blurred_disk(radius, sigma, mid) >= (double)MIN_ALPHA)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    reach = hi + 1.0;
     int32_t r = iround(reach), x = iround(cx), y = iround(cy);
     box_t b = { x - r, y - r, x + r, y + r };
     piece_t* p = add_piece(l, PIECE_CIRCLE, b);
@@ -288,6 +321,11 @@ static void outer_shadow(list_t* l, const dmvsi_shadow_t* s, double alpha, doubl
     falloff_t f = { alpha, s->color, sigma, r, 1.0 };
     double sq = sigma * 2.82842712474619010;        /* 2 sqrt(2) sigma */
     f.scale = erf_(w / sq) * erf_(h / sq) / phi(r / sigma);
+    int32_t visible = (int32_t)outer_visible(&f, (double)reach) + 1;
+    if (visible < reach)
+        reach = visible;                            /* The rest is too faint to see */
+    if (reach <= 0)
+        return;
 
     box_t pieces[4];
     box_t center = K;
@@ -343,6 +381,15 @@ static void inset_shadow(list_t* l, const dmvsi_shadow_t* s, double alpha, doubl
     falloff_t f = { alpha, s->color, sigma, 0.0, 1.0 };
     if (box_empty(&H))
         return;
+    /* Inside S the shadow fades: Phi(-u / sigma) - visible to where it is MIN_ALPHA */
+    for (int32_t k = 0; k < e; k++)
+    {
+        if (alpha * phi(-(double)k / sigma) < (double)MIN_ALPHA)
+        {
+            e = k;
+            break;
+        }
+    }
 
     int32_t top_end = (S.y0 + e < H.y1) ? S.y0 + e : H.y1;
     int32_t bottom_start = (S.y1 - e > top_end) ? S.y1 - e : top_end;

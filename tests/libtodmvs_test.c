@@ -219,10 +219,10 @@ DMOD_TEST_STEP(libtodmvs_paints_shadows_around_what_casts_them)
     dmvsi_free(doc);
 
     const char* v = read_file(TEST_FILE("shadows.dmvs"));
-    DMOD_TEST_EXPECT_TRUE(has(v, "        CIRCLE  74, 74, 96, g1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        CIRCLE  74, 74, 50, g1\n"));        /* as far as it is visible */
     /* In the middle 1 - exp(-R^2 / 2 sigma^2) = 0.39 of 0x33 */
     DMOD_TEST_EXPECT_TRUE(has(v, ".gradient g1, RADIAL, 50, 50, 50, 50, #14FACC15 0, "));
-    DMOD_TEST_EXPECT_TRUE(has(v, "        RECT    0, 0, 200, 15, g2\n"));          /* the inset's top strip */
+    DMOD_TEST_EXPECT_TRUE(has(v, "        RECT    0, 0, 200, 10, g2\n"));          /* the inset's top strip, as far as visible */
     DMOD_TEST_EXPECT_TRUE(has(v, ".gradient g2, LINEAR, 180, #40000000 0, "));     /* half at the edge */
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("shadows.dmvs"), TEST_FILE("shadows.dmv")));
 }

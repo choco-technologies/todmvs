@@ -31,6 +31,7 @@ typedef struct
     uint32_t                gradient_count;
     uint32_t                gradient_capacity;
     char                  (*fonts)[MAX_NAME];  /* The .font name of the document's font i */
+    font_use_t*             uses;               /* ... what the view draws with it */
     uint32_t                font_count;
     char                  (*boxes)[MAX_NAME];  /* Box names used */
     uint32_t                box_count;
@@ -105,8 +106,10 @@ static int name_fonts(writer_t* w)
         w->font_count++;
     if (w->font_count == 0)
         return 0;
-    if ((w->fonts = Dmod_Malloc(w->font_count * MAX_NAME)) == NULL)
+    if ((w->fonts = Dmod_Malloc(w->font_count * MAX_NAME)) == NULL ||
+        (w->uses = Dmod_Malloc(w->font_count * sizeof(font_use_t))) == NULL)
         return -ENOMEM;
+    memset(w->uses, 0, w->font_count * sizeof(font_use_t));
     for (uint32_t i = 0; i < w->font_count; i++)
     {
         char spec[MAX_NAME], name[MAX_NAME];
@@ -122,12 +125,17 @@ static int name_fonts(writer_t* w)
     return 0;
 }
 
-static const char* font_name(const writer_t* w, dmvsi_font_t font)
+/* The .font name of a font the view draws text with: from now on declared, the text's characters in it */
+static const char* font_name(writer_t* w, dmvsi_font_t font, const char* text, size_t length)
 {
     for (uint32_t i = 0; i < w->font_count; i++)
     {
         if (dmvsi_font_at(w->doc, i) == font)
+        {
+            if (use_chars(&w->uses[i], text, length) != 0)
+                w->error = -ENOMEM;
             return w->fonts[i];
+        }
     }
     return "?";
 }
@@ -223,30 +231,54 @@ static int32_t percent(int32_t v)
     return (v >= 0) ? (v + 50) / 100 : -((-v + 50) / 100);
 }
 
+/* The assembler reads lines of up to this many characters */
+#define MAX_LINE        254u
+
+/* One declaration into t */
+static void declare_gradient(text_t* t, uint32_t i, const dmvsi_paint_t* g)
+{
+    text_fmt(t, ".gradient g%u, ", (unsigned)(i + 1U));
+    if (g->kind == DMVSI_PAINT_LINEAR)
+        text_fmt(t, "LINEAR, %d", (int)g->angle);
+    else
+    {
+        int32_t rx = percent(g->rx), ry = percent(g->ry);
+        text_fmt(t, "RADIAL, %d, %d, %d, %d", (int)percent(g->cx), (int)percent(g->cy), (int)((rx < 1) ? 1 : rx),
+                 (int)((ry < 1) ? 1 : ry));
+    }
+    for (uint32_t k = 0; k < g->count; k++)
+    {
+        text_str(t, ", ");
+        text_color(t, g->stops[k].color);
+        text_str(t, " ");
+        position(t, g->stops[k].position);
+    }
+    text_str(t, "\n");
+}
+
 static void declare_gradients(writer_t* w, text_t* t)
 {
     if (w->gradient_count != 0)
         text_str(t, "\n");
     for (uint32_t i = 0; i < w->gradient_count; i++)
     {
-        const dmvsi_paint_t* g = &w->gradients[i];
-        text_fmt(t, ".gradient g%u, ", (unsigned)(i + 1U));
-        if (g->kind == DMVSI_PAINT_LINEAR)
-            text_fmt(t, "LINEAR, %d", (int)g->angle);
-        else
+        /* Too long for a line: every second stop between the ends left out, until it fits */
+        dmvsi_paint_t g = w->gradients[i];
+        for (;;)
         {
-            int32_t rx = percent(g->rx), ry = percent(g->ry);
-            text_fmt(t, "RADIAL, %d, %d, %d, %d", (int)percent(g->cx), (int)percent(g->cy), (int)((rx < 1) ? 1 : rx),
-                     (int)((ry < 1) ? 1 : ry));
+            text_t line = { 0 };
+            declare_gradient(&line, i, &g);
+            bool fits = line.failed || line.size <= MAX_LINE + 1U || g.count <= 2U;
+            text_free(&line);
+            if (fits)
+                break;
+            uint8_t n = 1;
+            for (uint8_t k = 2; k + 1U < g.count; k += 2)
+                g.stops[n++] = g.stops[k];
+            g.stops[n++] = g.stops[g.count - 1U];
+            g.count = n;
         }
-        for (uint32_t k = 0; k < g->count; k++)
-        {
-            text_str(t, ", ");
-            text_color(t, g->stops[k].color);
-            text_str(t, " ");
-            position(t, g->stops[k].position);
-        }
-        text_str(t, "\n");
+        declare_gradient(t, i, &g);
     }
 }
 
@@ -392,7 +424,7 @@ static void write_text(writer_t* w, const dmvsi_text_t* t, const box_t* origin)
     numbers(w, v, 4);
     text_str(&w->code, ", ");
     text_string(&w->code, t->text, t->length);
-    text_fmt(&w->code, ", %s, ", font_name(w, t->font));
+    text_fmt(&w->code, ", %s, ", font_name(w, t->font, t->text, t->length));
     paint(w, &t->paint);
     text_str(&w->code, ", LEFT|TOP\n");
 }
@@ -558,7 +590,8 @@ static int write_view(writer_t* w, const char* output, const char* source)
     if (w->error != 0)
         return w->error;
     w->r.gradients = w->gradient_count;
-    w->r.fonts = w->font_count;
+    for (uint32_t i = 0; i < w->font_count; i++)
+        w->r.fonts += w->uses[i].used ? 1U : 0U;
 
     text_fmt(&t, "; %s - made by todmvs", view);
     if (source != NULL)
@@ -566,11 +599,13 @@ static int write_view(writer_t* w, const char* output, const char* source)
     if (dmvsi_converter_name(w->doc) != NULL)
         text_fmt(&t, " (%s)", dmvsi_converter_name(w->doc));
     text_fmt(&t, "\n\n.view   %s\n.size   %u, %u\n.entry  draw\n", view, (unsigned)width, (unsigned)height);
-    if (w->font_count != 0)
+    if (w->r.fonts != 0)
         text_str(&t, "\n");
     for (uint32_t i = 0; i < w->font_count; i++)
     {
         char spec[MAX_NAME];
+        if (!w->uses[i].used)
+            continue;               /* Of text that is not drawn (off the screen) */
         font_spec(dmvsi_font_at(w->doc, i), spec, sizeof(spec));
         text_fmt(&t, ".font   %s, \"%s\"\n", w->fonts[i], spec);
     }
@@ -607,13 +642,14 @@ dmod_libtodmvs_api_declaration(1.0, int, _write, ( dmvsi_doc_t doc, const char* 
 
     int ret = (w->boxes == NULL) ? -ENOMEM : write_view(w, output, options->source);
     if (ret == 0 && !options->no_assets)
-        ret = write_fonts(doc, dir, dmvsi_view_name(doc));
+        ret = write_fonts(doc, dir, dmvsi_view_name(doc), w->uses);
     if (result != NULL)
         *result = w->r;
 
     text_free(&w->code);
     Dmod_Free(w->gradients);
     Dmod_Free(w->fonts);
+    uses_free(w->uses, w->font_count);
     Dmod_Free(w->boxes);
     Dmod_Free(w);
     return ret;

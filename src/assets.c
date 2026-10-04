@@ -328,8 +328,52 @@ static void write_ini(const ini_t* ini, text_t* t, const char* font, const char*
     }
 }
 
-/* The fonts of `file`: its copy in `dir`, and the sections of its .ini */
-static int write_font(dmvsi_doc_t doc, const char* file, const char* dir, const char* view)
+int use_chars(font_use_t* use, const char* text, size_t length)
+{
+    const char* end = text + length;
+    use->used = true;
+    while (text < end)
+    {
+        uint32_t c = dmvsi_utf8_next(&text, end);
+        uint32_t lo = 0, hi = use->count;
+        while (lo < hi)
+        {
+            uint32_t mid = (lo + hi) / 2U;
+            if (use->chars[mid] < c)
+                lo = mid + 1U;
+            else
+                hi = mid;
+        }
+        if (lo < use->count && use->chars[lo] == c)
+            continue;
+        if (use->count == use->capacity)
+        {
+            uint32_t capacity = (use->capacity == 0) ? 32U : use->capacity * 2U;
+            uint32_t* chars = Dmod_Malloc(capacity * sizeof(uint32_t));
+            if (chars == NULL)
+                return -ENOMEM;
+            if (use->count != 0)
+                memcpy(chars, use->chars, use->count * sizeof(uint32_t));
+            Dmod_Free(use->chars);
+            use->chars = chars;
+            use->capacity = capacity;
+        }
+        memmove(use->chars + lo + 1, use->chars + lo, (use->count - lo) * sizeof(uint32_t));
+        use->chars[lo] = c;
+        use->count++;
+    }
+    return 0;
+}
+
+void uses_free(font_use_t* uses, uint32_t count)
+{
+    for (uint32_t i = 0; uses != NULL && i < count; i++)
+        Dmod_Free(uses[i].chars);
+    Dmod_Free(uses);
+}
+
+/* The fonts of `file` the view draws with: its copy in `dir`, and the sections of its .ini */
+static int write_font(dmvsi_doc_t doc, const char* file, const char* dir, const char* view, const font_use_t* uses)
 {
     char path[512];
     text_t t = { 0 };
@@ -354,7 +398,7 @@ static int write_font(dmvsi_doc_t doc, const char* file, const char* dir, const 
         dmvsi_font_info_t info;
         char spec[MAX_NAME];
         uint32_t c;
-        if (dmvsi_font_info(font, &info) != 0 || info.file == NULL || strcmp(info.file, file) != 0)
+        if (!uses[i].used || dmvsi_font_info(font, &info) != 0 || info.file == NULL || strcmp(info.file, file) != 0)
             continue;
         font_spec(font, spec, sizeof(spec));
         section_t* s = section(ini, spec, strlen(spec));
@@ -362,8 +406,11 @@ static int write_font(dmvsi_doc_t doc, const char* file, const char* dir, const 
             break;
         s->size = info.size;
         s->tracking = info.tracking;
-        for (uint32_t k = 0; dmvsi_font_char(font, k, &c); k++)
+        for (uint32_t k = 0; k < uses[i].count; k++)
+        {
+            c = uses[i].chars[k];
             add_char(ini, s, c);
+        }
     }
 
     if (!ini->failed)
@@ -375,26 +422,27 @@ static int write_font(dmvsi_doc_t doc, const char* file, const char* dir, const 
     return ret;
 }
 
-int write_fonts(dmvsi_doc_t doc, const char* dir, const char* view)
+int write_fonts(dmvsi_doc_t doc, const char* dir, const char* view, const font_use_t* uses)
 {
     dmvsi_font_t font;
     for (uint32_t i = 0; (font = dmvsi_font_at(doc, i)) != NULL; i++)
     {
         dmvsi_font_info_t info;
-        if (dmvsi_font_info(font, &info) != 0 || info.file == NULL)
+        if (!uses[i].used || dmvsi_font_info(font, &info) != 0 || info.file == NULL)
             continue;
 
-        /* Once per file: at its first font */
+        /* Once per file: at its first font the view draws with */
         bool first = true;
         for (uint32_t k = 0; k < i && first; k++)
         {
             dmvsi_font_info_t other;
-            if (dmvsi_font_info(dmvsi_font_at(doc, k), &other) == 0 && other.file != NULL && strcmp(other.file, info.file) == 0)
+            if (uses[k].used && dmvsi_font_info(dmvsi_font_at(doc, k), &other) == 0 && other.file != NULL &&
+                strcmp(other.file, info.file) == 0)
                 first = false;
         }
         if (!first)
             continue;
-        int ret = write_font(doc, info.file, dir, view);
+        int ret = write_font(doc, info.file, dir, view, uses);
         if (ret != 0)
             return ret;
     }
