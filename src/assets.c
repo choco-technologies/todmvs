@@ -10,6 +10,10 @@
  * An .ini that is in the output directory already - made for another view
  * - keeps its sections: a section of the same name (the same font, size and
  * letter spacing) gets the characters of both.
+ *
+ * An image's .ini has a section per size (and blur) the views draw it at -
+ * dmod makes a .dmvi of each; one drawn at its own size is a section with
+ * no keys.
  */
 
 #define MAX_SECTIONS        64u
@@ -447,4 +451,106 @@ int write_fonts(dmvsi_doc_t doc, const char* dir, const char* view, const font_u
             return ret;
     }
     return 0;
+}
+
+/* ---- Images ---- */
+
+#define MAX_IMAGE_SECTIONS  32u
+
+typedef struct
+{
+    char        name[MAX_NAME];
+    uint32_t    width, height;      /* 0: its own size */
+    uint32_t    blur;
+} image_section_t;
+
+/* The sections of an image's .ini (its sizes and blurs) */
+static uint32_t parse_image_ini(const text_t* t, image_section_t* out, uint32_t max)
+{
+    uint32_t count = 0;
+    image_section_t* s = NULL;
+    const char* p = t->data;
+    while (p != NULL && *p != '\0')
+    {
+        const char* end = strchr(p, '\n');
+        const char* line_end = (end != NULL) ? end : p + strlen(p);
+        while (p < line_end && (*p == ' ' || *p == '\t'))
+            p++;
+        const char* v = strchr(p, '=');
+        if (v != NULL && v >= line_end)
+            v = NULL;
+        if (*p == '[')
+        {
+            const char* close = p;
+            while (close < line_end && *close != ']')
+                close++;
+            size_t n = (size_t)(close - p - 1);
+            s = NULL;
+            if (close < line_end && count < max && n < MAX_NAME)
+            {
+                s = &out[count++];
+                memset(s, 0, sizeof(*s));
+                memcpy(s->name, p + 1, n);
+            }
+        }
+        else if (s != NULL && v != NULL && strncmp(p, "size", 4) == 0)
+        {
+            v++;
+            s->width = parse_number(&v);
+            if (*v == 'x')
+            {
+                v++;
+                s->height = parse_number(&v);
+            }
+        }
+        else if (s != NULL && v != NULL && strncmp(p, "blur", 4) == 0)
+        {
+            v++;
+            s->blur = parse_number(&v);
+        }
+        p = (end != NULL) ? end + 1 : NULL;
+    }
+    return count;
+}
+
+int image_section(const char* dir, const char* view, const char* image, const char* name,
+                  uint32_t width, uint32_t height, uint32_t blur)
+{
+    char path[512];
+    text_t t = { 0 };
+    image_section_t* sections = Dmod_Malloc(MAX_IMAGE_SECTIONS * sizeof(image_section_t));
+    if (sections == NULL)
+        return -ENOMEM;
+    Dmod_SnPrintf(path, sizeof(path), "%s/%s.ini", dir, base_name(image));
+    uint32_t count = text_load(&t, path) ? parse_image_ini(&t, sections, MAX_IMAGE_SECTIONS) : 0;
+    text_free(&t);
+
+    bool found = false;
+    for (uint32_t i = 0; i < count && !found; i++)
+        found = strcmp(sections[i].name, name) == 0;
+    if (!found && count < MAX_IMAGE_SECTIONS && strlen(name) < MAX_NAME)
+    {
+        image_section_t* s = &sections[count++];
+        memset(s, 0, sizeof(*s));
+        strcpy(s->name, name);
+        s->width = width;
+        s->height = height;
+        s->blur = blur;
+    }
+
+    text_fmt(&t, "; %s - the sizes of the views made by todmvs (%s, ...) draw it at. todmvs adds\n", base_name(image), view);
+    text_str(&t, "; to it; dmod makes a .dmvi of every section.\n");
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const image_section_t* s = &sections[i];
+        text_fmt(&t, "\n[%s]\n", s->name);
+        if (s->width != 0 && s->height != 0)
+            text_fmt(&t, "size = %ux%u\n", (unsigned)s->width, (unsigned)s->height);
+        if (s->blur != 0)
+            text_fmt(&t, "blur = %u\n", (unsigned)s->blur);
+    }
+    int ret = t.failed ? -ENOMEM : text_save(&t, path) ? 0 : -EIO;
+    text_free(&t);
+    Dmod_Free(sections);
+    return ret;
 }

@@ -470,21 +470,37 @@ static void write_text(writer_t* w, const dmvsi_text_t* t, const box_t* origin)
     text_str(&w->code, ", LEFT|TOP\n");
 }
 
-/* The image next to the view, named as the .dmvi dmod makes of it */
+/*
+ * The image next to the view, and the section of its .ini dmod makes the
+ * .dmvi of: <name> at its own size, <name>-<w>x<h>[-b<blur>] scaled (and
+ * blurred). dmview draws it unscaled, placed in the rectangle and clipped.
+ */
 static void write_image(writer_t* w, const dmvsi_image_t* im, const box_t* origin)
 {
-    char name[256], copy[512];
+    char stem_name[MAX_NAME], name[MAX_NAME + 32], copy[512];
     const char* base = base_name(im->path);
     const char* dot = strrchr(base, '.');
     size_t stem = (dot != NULL && dot != base) ? (size_t)(dot - base) : strlen(base);
-    if (stem + sizeof(".dmvi") > sizeof(name))
-        stem = sizeof(name) - sizeof(".dmvi");
-    memcpy(name, base, stem);
-    strcpy(name + stem, ".dmvi");
+    if (stem >= sizeof(stem_name))
+        stem = sizeof(stem_name) - 1U;
+    memcpy(stem_name, base, stem);
+    stem_name[stem] = '\0';
+    int32_t iw = snap(im->width), ih = snap(im->height), blur = snap(im->blur);
+    if (iw > 0 && ih > 0 && blur > 0)
+        Dmod_SnPrintf(name, sizeof(name), "%s-%dx%d-b%d", stem_name, (int)iw, (int)ih, (int)blur);
+    else if (iw > 0 && ih > 0)
+        Dmod_SnPrintf(name, sizeof(name), "%s-%dx%d", stem_name, (int)iw, (int)ih);
+    else if (blur > 0)
+        Dmod_SnPrintf(name, sizeof(name), "%s-b%d", stem_name, (int)blur);
+    else
+        Dmod_SnPrintf(name, sizeof(name), "%s", stem_name);
     if (!w->no_assets && w->error == 0)
     {
         Dmod_SnPrintf(copy, sizeof(copy), "%s/%s", w->dir, base);
         int ret = copy_file(im->path, copy);
+        if (ret == 0)
+            ret = image_section(w->dir, dmvsi_view_name(w->doc), im->path, name, (uint32_t)((iw > 0) ? iw : 0),
+                                (uint32_t)((ih > 0) ? ih : 0), (uint32_t)((blur > 0) ? blur : 0));
         if (ret != 0)
         {
             DMOD_LOG_ERROR("todmvs: cannot copy the image %s\n", im->path);
@@ -498,13 +514,15 @@ static void write_image(writer_t* w, const dmvsi_image_t* im, const box_t* origi
     op(w, mask ? "ICON" : "IMAGE");
     numbers(w, v, 4);
     text_str(&w->code, ", ");
+    strcat(name, ".dmvi");
     text_string(&w->code, name, strlen(name));
     if (mask)
     {
         text_str(&w->code, ", ");
         paint(w, &im->paint);
     }
-    text_str(&w->code, ", LEFT|TOP\n");
+    text_str(&w->code, (im->flags & DMVSI_IMAGE_CENTER) ? ", CENTER" : (im->flags & DMVSI_IMAGE_RIGHT) ? ", RIGHT" : ", LEFT");
+    text_str(&w->code, (im->flags & DMVSI_IMAGE_MIDDLE) ? "|MIDDLE\n" : (im->flags & DMVSI_IMAGE_BOTTOM) ? "|BOTTOM\n" : "|TOP\n");
 }
 
 /* Its first shape fills it with opaque pixels */

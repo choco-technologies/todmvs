@@ -52,8 +52,11 @@ rest of from: a copy of every font file the view draws with, and its `.ini`
 with a section for each size and letter spacing - with only the characters
 the view's text uses (a clock in 48 px is just its digits and the colon, not a
 whole font). An `.ini` that is there already keeps its other sections, so
-several views can share a directory. Images are copied too, and named in
-the view as the `.dmvi` dmod converts them into.
+several views can share a directory. Images are copied too, with an `.ini`
+of a section for each size (and blur) a view draws them at - `photo` at its
+own size, `photo-140x93` scaled, `photo-480x320-b20` scaled and blurred -
+and named in the view as the `.dmvi` dmod converts each section into
+(dmview draws images unscaled: placed in their rectangle and clipped).
 
 The output directory is ready to be one of `DMOD_ASSETS_PATHS`.
 

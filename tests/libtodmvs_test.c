@@ -317,3 +317,43 @@ DMOD_TEST_STEP(libtodmvs_writes_behaviour)
     DMOD_TEST_EXPECT_TRUE(has(v, "ease1:\n"));
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("screens.dmvs"), TEST_FILE("screens.dmv")));
 }
+
+DMOD_TEST_STEP(libtodmvs_writes_the_sizes_of_images)
+{
+    /* Any file: the writer copies it and names it */
+    void* f = Dmod_FileOpen(TEST_FILE("cover.jpg"), "wb");
+    DMOD_TEST_EXPECT_TRUE(f != NULL);
+    if (f == NULL)
+        return;
+    Dmod_FileWrite("jpeg", 1, 4, f);
+    Dmod_FileClose(f);
+    (void)Dmod_FileRemove(TEST_FILE("cover.jpg.ini"));
+
+    dmvsi_doc_t doc = dmvsi_new();
+    DMOD_TEST_EXPECT_TRUE(doc != NULL);
+    if (doc == NULL)
+        return;
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_view(doc, "covers", 100, 80), 0);
+    dmvsi_image_t im;
+    memset(&im, 0, sizeof(im));
+    im.path = TEST_FILE("cover.jpg");
+    rect(&im.rect, 0, 0, 40, 40);
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);                  /* At its own size */
+    im.width = DMVSI_PX(60);                                            /* Covering 40 x 40, in the middle */
+    im.height = DMVSI_PX(40);
+    im.flags = DMVSI_IMAGE_CENTER | DMVSI_IMAGE_MIDDLE;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);
+    im.blur = DMVSI_PX(8);                                              /* ... and blurred */
+    im.flags = DMVSI_IMAGE_RIGHT | DMVSI_IMAGE_BOTTOM;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("covers.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("covers.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   0, 0, 40, 40, \"cover.dmvi\", LEFT|TOP\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   0, 0, 40, 40, \"cover-60x40.dmvi\", CENTER|MIDDLE\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   0, 0, 40, 40, \"cover-60x40-b8.dmvi\", RIGHT|BOTTOM\n"));
+    const char* ini = read_file(TEST_FILE("cover.jpg.ini"));
+    DMOD_TEST_EXPECT_TRUE(has(ini, "\n[cover]\n\n[cover-60x40]\nsize = 60x40\n\n[cover-60x40-b8]\nsize = 60x40\nblur = 8\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("covers.dmvs"), TEST_FILE("covers.dmv")));
+}
