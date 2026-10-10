@@ -410,6 +410,12 @@ DMOD_TEST_STEP(libtodmvs_writes_code)
     DMOD_TEST_EXPECT_EQ(dmvsi_add_timer(doc, 35, step), 0);
     DMOD_TEST_EXPECT_EQ(dmvsi_set_init(doc, show), 0);
 
+    /* A text longer than its variable holds: cut to it (60 bytes), on lines of 48 */
+    dmvsi_var_t note = dmvsi_add_text_var(doc, "note", 60, "");
+    dmvsi_action_t long_text = act(DMVSI_ACT_SET, note, 0, 0,
+        "0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij");
+    DMOD_TEST_EXPECT_TRUE(dmvsi_add_handler(doc, &long_text, 1) != 0);
+
     dmvsi_group_t group;
     memset(&group, 0, sizeof(group));
     group.opacity = 255;
@@ -452,6 +458,8 @@ DMOD_TEST_STEP(libtodmvs_writes_code)
                                  "        JMP     .f1\n.i1:\n        MIN     $speed, 68\n.f1:\n        CALL    h1\n        RET\n        RET\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "h1:\n        FORMAT  $label, \"%d\", $speed\n        APPEND  $label, \" km/h\"\n"
                                  "        SET     $bar, $speed\n.l1:\n        SUB     $bar, 1\n        JMP     .b1\n        JMP     .l1\n.b1:\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h4:\n        SET     $note, \"0123456789abcdefghij0123456789abcdefghij01234567\"\n"
+                                 "        APPEND  $note, \"89abcdefghij\"\n        RET\n"));
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("speed.dmvs"), TEST_FILE("speed.dmv")));
 
     /* Its font has every character the label may show */
