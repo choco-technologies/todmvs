@@ -1,6 +1,7 @@
 #include "private.h"
 #include <errno.h>
 #include <string.h>
+#include <stddef.h>
 
 /*
  * What a view needs next to it: its fonts as dmod's assets (a copy of the
@@ -59,7 +60,11 @@ void font_spec(dmvsi_font_t font, char* spec, size_t size)
     const char* name = base_name(info.file);
     const char* dot = strrchr(name, '.');
     const char* end = (dot != NULL && dot != name) ? dot : name + strlen(name);
-    for (const char* p = name; p < end && n + 1U < sizeof(base); p++)
+    /* The base no longer than leaves room for "-<size>-t-<tracking>" in spec (a long file name cut, not its size) */
+    size_t room = (size > 16U) ? size - 16U : 1U;
+    if (room > sizeof(base))
+        room = sizeof(base);
+    for (const char* p = name; p < end && n + 1U < room; p++)
     {
         char c = *p;
         if (c >= 'A' && c <= 'Z')
@@ -75,6 +80,17 @@ void font_spec(dmvsi_font_t font, char* spec, size_t size)
     base[n] = '\0';
     if (n == 0)
         strcpy(base, "font");
+    if (end - name >= (ptrdiff_t)room && room > 28U)
+    {
+        /* Cut: its beginning and a hash of all of it (fonts.gstatic.com's names differ at their ends) */
+        uint32_t h = 2166136261u;
+        for (const char* p = name; p < end; p++)
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        n = (n > room - 9U - 1U) ? room - 9U - 1U : n;
+        while (n > 0 && base[n - 1U] == '-')
+            n--;
+        Dmod_SnPrintf(base + n, sizeof(base) - n, "-%06x", (unsigned)(h & 0xFFFFFFu));
+    }
 
     if (info.tracking == 0)
     {
