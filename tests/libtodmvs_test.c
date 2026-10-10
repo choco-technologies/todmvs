@@ -357,3 +357,115 @@ DMOD_TEST_STEP(libtodmvs_writes_the_sizes_of_images)
     DMOD_TEST_EXPECT_TRUE(has(ini, "\n[cover]\n\n[cover-60x40]\nsize = 60x40\n\n[cover-60x40-b8]\nsize = 60x40\nblur = 8\n"));
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("covers.dmvs"), TEST_FILE("covers.dmv")));
 }
+
+static dmvsi_action_t act(uint8_t kind, dmvsi_var_t var, dmvsi_var_t operand, int32_t value, const char* text)
+{
+    dmvsi_action_t a;
+    memset(&a, 0, sizeof(a));
+    a.kind = kind;
+    a.var = var;
+    a.operand = operand;
+    a.value = value;
+    a.text = text;
+    return a;
+}
+
+DMOD_TEST_STEP(libtodmvs_writes_code)
+{
+    /* A speedometer: every 35 ms 2 km/h more up to 68 - its text and a bar as wide as the speed */
+    (void)Dmod_FileRemove(TEST_FILE("Inter-Regular.otf.ini"));
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "speed", 100, 40);
+    dmvsi_var_t speed = dmvsi_add_var(doc, "speed", 0);
+    dmvsi_var_t bar = dmvsi_add_var(doc, "bar", 0);
+    dmvsi_var_t label = dmvsi_add_text_var(doc, "label", 12, "0 km/h");
+
+    /* show: label = speed + " km/h"; bar = speed */
+    dmvsi_handler_t show = dmvsi_new_handler(doc);
+    dmvsi_action_t tick[8];
+    tick[0] = act(DMVSI_ACT_ADD, speed, 0, 2, NULL);
+    tick[1] = act(DMVSI_ACT_IF_GE, speed, 0, 68, NULL);
+    tick[2] = act(DMVSI_ACT_SET, speed, 0, 68, NULL);
+    tick[3] = act(DMVSI_ACT_ELSE, 0, 0, 0, NULL);
+    tick[4] = act(DMVSI_ACT_MIN, speed, 0, 68, NULL);
+    tick[5] = act(DMVSI_ACT_END, 0, 0, 0, NULL);
+    tick[6] = act(DMVSI_ACT_CALL, 0, 0, 0, NULL);
+    tick[6].handler = show;                                 /* Made after it */
+    tick[7] = act(DMVSI_ACT_RETURN, 0, 0, 0, NULL);
+    dmvsi_handler_t step = dmvsi_add_handler(doc, tick, 8);
+    dmvsi_action_t text[4];
+    text[0] = act(DMVSI_ACT_FORMAT, label, speed, 0, "%d");
+    dmvsi_var_t since = dmvsi_add_var(doc, "since", 0);
+    dmvsi_action_t now = act(DMVSI_ACT_SET, since, DMVSI_VAR_TIME, 0, NULL);
+    DMOD_TEST_EXPECT_TRUE(dmvsi_add_handler(doc, &now, 1) != 0);
+    text[1] = act(DMVSI_ACT_APPEND, label, 0, 0, " km/h");
+    text[2] = act(DMVSI_ACT_SET, bar, speed, 0, NULL);
+    text[3] = act(DMVSI_ACT_LOOP, 0, 0, 0, NULL);
+    dmvsi_action_t more[3];
+    more[0] = act(DMVSI_ACT_SUB, bar, 0, 1, NULL);
+    more[1] = act(DMVSI_ACT_BREAK, 0, 0, 0, NULL);
+    more[2] = act(DMVSI_ACT_END, 0, 0, 0, NULL);
+    dmvsi_action_t all[7] = { text[0], text[1], text[2], text[3], more[0], more[1], more[2] };
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_handler(doc, show, all, 7), 0);
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_timer(doc, 35, step), 0);
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_init(doc, show), 0);
+
+    /* A text longer than its variable holds: cut to it (60 bytes), on lines of 48 */
+    dmvsi_var_t note = dmvsi_add_text_var(doc, "note", 60, "");
+    dmvsi_action_t long_text = act(DMVSI_ACT_SET, note, 0, 0,
+        "0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij");
+    DMOD_TEST_EXPECT_TRUE(dmvsi_add_handler(doc, &long_text, 1) != 0);
+
+    dmvsi_group_t group;
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.name = "bar";
+    rect(&group.rect, 0, 30, 1, 10);
+    group.flags = DMVSI_GROUP_CLIP;
+    (void)dmvsi_begin_group(doc, &group);
+    DMOD_TEST_EXPECT_EQ(dmvsi_bind(doc, DMVSI_BIND_W, bar), 0);
+    dmvsi_fill_t fill;
+    memset(&fill, 0, sizeof(fill));
+    rect(&fill.rect, 0, 30, 100, 10);
+    fill.paint.color = 0xFF3B82F6u;
+    (void)dmvsi_add_fill(doc, &fill);
+    (void)dmvsi_end_group(doc);
+
+    dmvsi_text_t line;
+    memset(&line, 0, sizeof(line));
+    line.x = DMVSI_PX(10);
+    line.baseline = DMVSI_PX(20);
+    line.text = "0 km/h";
+    line.length = 6;
+    line.font = dmvsi_font(doc, INTER, 16, 0, NULL);
+    line.paint.color = 0xFFFFFFFFu;
+    line.var = label;
+    line.chars = "0123456789 km/h";
+    line.width = DMVSI_PX(80);
+    line.align = DMVSI_TEXT_CENTER;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_text(doc, &line), 0);
+
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("speed.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("speed.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $label, str[12], \"0 km/h\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".timer  35, h2\n.init   h1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h3:\n        SET     $since, $time\n"));               /* show is h1: made first */
+    DMOD_TEST_EXPECT_TRUE(has(v, "BOX     @bar, 0, 30, $bar, 10, OPAQUE\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ", $label, inter_regular_16, #FFFFFF, CENTER|TOP\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h2:\n        ADD     $speed, 2\n        JLT     $speed, 68, .i1\n        SET     $speed, 68\n"
+                                 "        JMP     .f1\n.i1:\n        MIN     $speed, 68\n.f1:\n        CALL    h1\n        RET\n        RET\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h1:\n        FORMAT  $label, \"%d\", $speed\n        APPEND  $label, \" km/h\"\n"
+                                 "        SET     $bar, $speed\n.l1:\n        SUB     $bar, 1\n        JMP     .b1\n        JMP     .l1\n.b1:\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h4:\n        SET     $note, \"0123456789abcdefghij0123456789abcdefghij01234567\"\n"
+                                 "        APPEND  $note, \"89abcdefghij\"\n        RET\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("speed.dmvs"), TEST_FILE("speed.dmv")));
+
+    /* Its font has every character the label may show */
+    const char* ini = read_file(TEST_FILE("Inter-Regular.otf.ini"));
+    bool every = has(ini, "chars    = 0x20,0x2F-0x39,0x68,0x6B,0x6D\n");
+    if (!every)
+        Dmod_Printf("    %s\n", ini);
+    DMOD_TEST_EXPECT_TRUE(every);
+}

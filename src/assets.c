@@ -1,6 +1,7 @@
 #include "private.h"
 #include <errno.h>
 #include <string.h>
+#include <stddef.h>
 
 /*
  * What a view needs next to it: its fonts as dmod's assets (a copy of the
@@ -59,7 +60,11 @@ void font_spec(dmvsi_font_t font, char* spec, size_t size)
     const char* name = base_name(info.file);
     const char* dot = strrchr(name, '.');
     const char* end = (dot != NULL && dot != name) ? dot : name + strlen(name);
-    for (const char* p = name; p < end && n + 1U < sizeof(base); p++)
+    /* The base no longer than leaves room for "-<size>-t-<tracking>" in spec (a long file name cut, not its size) */
+    size_t room = (size > 16U) ? size - 16U : 1U;
+    if (room > sizeof(base))
+        room = sizeof(base);
+    for (const char* p = name; p < end && n + 1U < room; p++)
     {
         char c = *p;
         if (c >= 'A' && c <= 'Z')
@@ -75,6 +80,17 @@ void font_spec(dmvsi_font_t font, char* spec, size_t size)
     base[n] = '\0';
     if (n == 0)
         strcpy(base, "font");
+    if (end - name >= (ptrdiff_t)room && room > 28U)
+    {
+        /* Cut: its beginning and a hash of all of it (fonts.gstatic.com's names differ at their ends) */
+        uint32_t h = 2166136261u;
+        for (const char* p = name; p < end; p++)
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        n = (n > room - 9U - 1U) ? room - 9U - 1U : n;
+        while (n > 0 && base[n - 1U] == '-')
+            n--;
+        Dmod_SnPrintf(base + n, sizeof(base) - n, "-%06x", (unsigned)(h & 0xFFFFFFu));
+    }
 
     if (info.tracking == 0)
     {
@@ -462,6 +478,8 @@ typedef struct
     char        name[MAX_NAME];
     uint32_t    width, height;      /* 0: its own size */
     uint32_t    blur;
+    uint32_t    crop[4];            /* x, y, w, h; w 0: all of it */
+    uint32_t    radius;
 } image_section_t;
 
 /* The sections of an image's .ini (its sizes and blurs) */
@@ -508,13 +526,27 @@ static uint32_t parse_image_ini(const text_t* t, image_section_t* out, uint32_t 
             v++;
             s->blur = parse_number(&v);
         }
+        else if (s != NULL && v != NULL && strncmp(p, "crop", 4) == 0)
+        {
+            v++;
+            for (int k = 0; k < 4; k++)
+            {
+                s->crop[k] = parse_number(&v);
+                if (*v == ',')
+                    v++;
+            }
+        }
+        else if (s != NULL && v != NULL && strncmp(p, "radius", 6) == 0)
+        {
+            v++;
+            s->radius = parse_number(&v);
+        }
         p = (end != NULL) ? end + 1 : NULL;
     }
     return count;
 }
 
-int image_section(const char* dir, const char* view, const char* image, const char* name,
-                  uint32_t width, uint32_t height, uint32_t blur)
+int image_section(const char* dir, const char* view, const char* image, const char* name, const image_shape_t* shape)
 {
     char path[512];
     text_t t = { 0 };
@@ -533,9 +565,11 @@ int image_section(const char* dir, const char* view, const char* image, const ch
         image_section_t* s = &sections[count++];
         memset(s, 0, sizeof(*s));
         strcpy(s->name, name);
-        s->width = width;
-        s->height = height;
-        s->blur = blur;
+        s->width = shape->width;
+        s->height = shape->height;
+        s->blur = shape->blur;
+        memcpy(s->crop, shape->crop, sizeof(s->crop));
+        s->radius = shape->radius;
     }
 
     text_fmt(&t, "; %s - the sizes of the views made by todmvs (%s, ...) draw it at. todmvs adds\n", base_name(image), view);
@@ -548,6 +582,10 @@ int image_section(const char* dir, const char* view, const char* image, const ch
             text_fmt(&t, "size = %ux%u\n", (unsigned)s->width, (unsigned)s->height);
         if (s->blur != 0)
             text_fmt(&t, "blur = %u\n", (unsigned)s->blur);
+        if (s->crop[2] != 0 && s->crop[3] != 0)
+            text_fmt(&t, "crop = %u,%u,%u,%u\n", (unsigned)s->crop[0], (unsigned)s->crop[1], (unsigned)s->crop[2], (unsigned)s->crop[3]);
+        if (s->radius != 0)
+            text_fmt(&t, "radius = %u\n", (unsigned)s->radius);
     }
     int ret = t.failed ? -ENOMEM : text_save(&t, path) ? 0 : -EIO;
     text_free(&t);
