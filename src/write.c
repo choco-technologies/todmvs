@@ -24,6 +24,7 @@
 #define MAX_BOX_NAMES   1024u
 
 #define MAX_EASINGS     8u
+#define MAX_CALLS       8u              /* dmview's CALL stack */
 #define MAX_MERGES      64u
 
 /* A translucent fill painted right over an opaque one of its rectangle: one opaque fill of both */
@@ -457,17 +458,58 @@ static void write_shadow(writer_t* w, const dmvsi_shadow_t* s, const box_t* orig
     }
 }
 
+/* Every character of a font into its use: what a text variable may show is there (dmvsi added it) */
+static void use_all_chars(writer_t* w, dmvsi_font_t font)
+{
+    char utf8[4];
+    uint32_t cp = 0;
+    for (uint32_t i = 0; dmvsi_font_char(font, i, &cp); i++)
+    {
+        size_t n = (cp < 0x80u) ? 1u : (cp < 0x800u) ? 2u : (cp < 0x10000u) ? 3u : 4u;
+        if (n == 1u)
+            utf8[0] = (char)cp;
+        else if (n == 2u)
+        {
+            utf8[0] = (char)(0xC0u | (cp >> 6));
+            utf8[1] = (char)(0x80u | (cp & 0x3Fu));
+        }
+        else if (n == 3u)
+        {
+            utf8[0] = (char)(0xE0u | (cp >> 12));
+            utf8[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[2] = (char)(0x80u | (cp & 0x3Fu));
+        }
+        else
+        {
+            utf8[0] = (char)(0xF0u | (cp >> 18));
+            utf8[1] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+            utf8[2] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[3] = (char)(0x80u | (cp & 0x3Fu));
+        }
+        (void)font_name(w, font, utf8, n);
+    }
+}
+
 static void write_text(writer_t* w, const dmvsi_text_t* t, const box_t* origin)
 {
     box_t b = text_box(t);
+    if (t->var != 0 && t->width > 0)
+        b.x1 = b.x0 + snap(t->width);                   /* The room it is put in as it changes */
     int32_t v[4] = { b.x0 - origin->x0, b.y0 - origin->y0, b.x1 - b.x0, b.y1 - b.y0 };
     op(w, "TEXT");
     numbers(w, v, 4);
     text_str(&w->code, ", ");
-    text_string(&w->code, t->text, t->length);
+    if (t->var != 0)
+    {
+        use_all_chars(w, t->font);
+        text_fmt(&w->code, "$%s", var_name(w, t->var));
+    }
+    else
+        text_string(&w->code, t->text, t->length);
     text_fmt(&w->code, ", %s, ", font_name(w, t->font, t->text, t->length));
     paint(w, &t->paint);
-    text_str(&w->code, ", LEFT|TOP\n");
+    text_str(&w->code, (t->var == 0 || t->align == DMVSI_TEXT_LEFT) ? ", LEFT|TOP\n" :
+                       (t->align == DMVSI_TEXT_CENTER) ? ", CENTER|TOP\n" : ", RIGHT|TOP\n");
 }
 
 /*
@@ -620,13 +662,15 @@ static const merge_t* merged(const writer_t* w, const dmvsi_node_t* n, bool* ski
 }
 
 static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* origin, const box_t* clip);
+static const char* var_name(const writer_t* w, dmvsi_var_t var);
 
 static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin, const box_t* clip)
 {
     const dmvsi_group_t* g = &n->u.group;
     bool clips = (g->flags & DMVSI_GROUP_CLIP) != 0;
     bool scrolls = g->scroll_w > 0 && g->scroll_h > 0;
-    bool bound = n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0 || n->bind[DMVSI_BIND_OPACITY] != 0;
+    bool bound = n->bind[DMVSI_BIND_X] != 0 || n->bind[DMVSI_BIND_Y] != 0 || n->bind[DMVSI_BIND_OPACITY] != 0 ||
+                 n->bind[DMVSI_BIND_W] != 0 || n->bind[DMVSI_BIND_H] != 0;
     if (g->opacity == 0 && n->bind[DMVSI_BIND_OPACITY] == 0)
     {
         w->r.skipped++;
@@ -662,7 +706,20 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
         else
             text_fmt(&w->code, "%d, ", (int)v[k]);
     }
-    numbers(w, v + 2, 2);
+    for (uint32_t k = 0; k < 2U; k++)
+    {
+        /* Its size from a variable: pixels, as a handler computes them */
+        dmvsi_var_t var = n->bind[(k == 0) ? DMVSI_BIND_W : DMVSI_BIND_H];
+        if (k > 0)
+            text_str(&w->code, ", ");
+        if (var != 0 && var <= w->var_count)
+        {
+            w->vars[var - 1U].bound = (uint8_t)(((k == 0) ? DMVSI_BIND_W : DMVSI_BIND_H) + 1U);
+            text_fmt(&w->code, "$%s", var_name(w, var));
+        }
+        else
+            text_fmt(&w->code, "%d", (int)v[2U + k]);
+    }
     if (n->bind[DMVSI_BIND_OPACITY] == 0 && group_opaque(n, &rect))  /* Moving, it covers its box all the same */
         text_str(&w->code, ", OPAQUE");
     text_str(&w->code, "\n");
@@ -844,25 +901,68 @@ static void set_op(text_t* t, const char* mnemonic, const char* a, const char* s
     text_fmt(t, "$%s%s, %s\n", a, suffix, b);
 }
 
+static bool is_text_var(const writer_t* w, dmvsi_var_t var)
+{
+    dmvsi_var_info_t info;
+    return dmvsi_var_info(w->doc, var, &info) == 0 && info.kind == DMVSI_VAR_TEXT;
+}
+
+/* An action's operand as the view writes it: $variable, a number (a bound variable's in its view value), "text" */
+static void operand(const writer_t* w, const dmvsi_action_t* a, text_t* out)
+{
+    if (a->operand != 0)
+        text_fmt(out, "$%s", var_name(w, a->operand));
+    else if (is_text_var(w, a->var) || a->kind == DMVSI_ACT_FORMAT)
+        text_string(out, (a->text != NULL) ? a->text : "", (a->text != NULL) ? strlen(a->text) : 0);
+    else
+        text_fmt(out, "%d", (int)view_value(w, a->var, a->value));
+}
+
+/* "        <mnemonic> $<var>, <operand>" */
+static void var_op(writer_t* w, text_t* t, const char* mnemonic, const dmvsi_action_t* a)
+{
+    static const char spaces[] = "        ";
+    size_t n = strlen(mnemonic);
+    text_add(t, spaces, 8);
+    text_add(t, mnemonic, n);
+    text_add(t, spaces, (n < 8U) ? 8U - n : 1U);
+    text_fmt(t, "$%s, ", var_name(w, a->var));
+    operand(w, a, t);
+    text_str(t, "\n");
+}
+
+typedef struct
+{
+    char        kind;                       /* 'I' an IF, 'E' an IF past its ELSE, 'L' a LOOP */
+    uint32_t    label;
+} block_t;
+
+#define MAX_BLOCKS  32u
+
+/*
+ * A handler as a subroutine h<n>: IF jumps over what does not hold (to .i<n>,
+ * its ELSE's or its END's; past an ELSE, its END is .f<n>), a LOOP is .l<n>
+ * ... JMP .l<n>, .b<n>
+ */
 static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
 {
     const dmvsi_action_t* actions = NULL;
     uint32_t count = dmvsi_handler_actions(w->doc, h, &actions);
-    uint32_t stack[16], depth = 0, labels = 0;
+    block_t stack[MAX_BLOCKS];
+    uint32_t depth = 0, labels = 0;
     char value[24];
     text_fmt(t, "\nh%u:\n", (unsigned)h);
     for (uint32_t i = 0; i < count; i++)
     {
         const dmvsi_action_t* a = &actions[i];
-        const char* name = (a->kind != DMVSI_ACT_END) ? var_name(w, a->var) : "";
-        int32_t v = (a->kind != DMVSI_ACT_END) ? view_value(w, a->var, a->value) : 0;
-        Dmod_SnPrintf(value, sizeof(value), "%d", (int)v);
+        const char* name = (a->var != 0) ? var_name(w, a->var) : "";
         switch (a->kind)
         {
             case DMVSI_ACT_ANIMATE:
                 if (a->duration > 0)
                 {
                     char n[48];
+                    Dmod_SnPrintf(value, sizeof(value), "%d", (int)view_value(w, a->var, a->value));
                     Dmod_SnPrintf(n, sizeof(n), "$%s", name);
                     set_op(t, "SET", name, "_from", n);
                     set_op(t, "SET", name, "_to", value);
@@ -876,27 +976,114 @@ static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
                 }
                 /* fall through: no time, at once */
             case DMVSI_ACT_SET:
-                set_op(t, "SET", name, "", value);
+                var_op(w, t, "SET", a);
                 if (w->vars[a->var - 1U].animated)
                     set_op(t, "SET", name, "_on", "0");     /* It stops moving */
                 break;
             case DMVSI_ACT_TOGGLE:
                 text_fmt(t, "        TOGGLE  $%s\n", name);
                 break;
-            case DMVSI_ACT_IF_EQ:
-            case DMVSI_ACT_IF_NE:
-                if (depth < 16U)
-                    stack[depth++] = ++labels;
-                text_fmt(t, "        %s     $%s, %s, .i%u\n", (a->kind == DMVSI_ACT_IF_EQ) ? "JNE" : "JEQ", name, value,
-                         (unsigned)labels);
+            case DMVSI_ACT_ADD: var_op(w, t, "ADD", a); break;
+            case DMVSI_ACT_SUB: var_op(w, t, "SUB", a); break;
+            case DMVSI_ACT_MUL: var_op(w, t, "MUL", a); break;
+            case DMVSI_ACT_DIV: var_op(w, t, "DIV", a); break;
+            case DMVSI_ACT_MOD: var_op(w, t, "MOD", a); break;
+            case DMVSI_ACT_MIN: var_op(w, t, "MIN", a); break;
+            case DMVSI_ACT_MAX: var_op(w, t, "MAX", a); break;
+            case DMVSI_ACT_APPEND: var_op(w, t, "APPEND", a); break;
+            case DMVSI_ACT_FORMAT:
+                text_fmt(t, "        FORMAT  $%s, ", name);
+                text_string(t, a->text, strlen(a->text));
+                if (a->operand != 0)
+                    text_fmt(t, ", $%s\n", var_name(w, a->operand));
+                else
+                    text_fmt(t, ", %d\n", (int)a->value);
                 break;
-            default:
+            case DMVSI_ACT_IF_EQ: case DMVSI_ACT_IF_NE: case DMVSI_ACT_IF_LT:
+            case DMVSI_ACT_IF_LE: case DMVSI_ACT_IF_GT: case DMVSI_ACT_IF_GE:
+            {
+                /* Over the block when it does not hold */
+                const char* skip = (a->kind == DMVSI_ACT_IF_EQ) ? "JNE" : (a->kind == DMVSI_ACT_IF_NE) ? "JEQ" :
+                                   (a->kind == DMVSI_ACT_IF_LT) ? "JGE" : (a->kind == DMVSI_ACT_IF_LE) ? "JGT" :
+                                   (a->kind == DMVSI_ACT_IF_GT) ? "JLE" : "JLT";
+                uint32_t label = ++labels;
+                if (depth < MAX_BLOCKS)
+                {
+                    stack[depth].kind = 'I';
+                    stack[depth++].label = label;
+                }
+                text_fmt(t, "        %s     $%s, ", skip, name);
+                operand(w, a, t);
+                text_fmt(t, ", .i%u\n", (unsigned)label);
+                break;
+            }
+            case DMVSI_ACT_ELSE:
                 if (depth > 0)
-                    text_fmt(t, ".i%u:\n", (unsigned)stack[--depth]);
+                {
+                    text_fmt(t, "        JMP     .f%u\n.i%u:\n", (unsigned)stack[depth - 1U].label,
+                             (unsigned)stack[depth - 1U].label);
+                    stack[depth - 1U].kind = 'E';
+                }
+                break;
+            case DMVSI_ACT_LOOP:
+            {
+                uint32_t label = ++labels;
+                if (depth < MAX_BLOCKS)
+                {
+                    stack[depth].kind = 'L';
+                    stack[depth++].label = label;
+                }
+                text_fmt(t, ".l%u:\n", (unsigned)label);
+                break;
+            }
+            case DMVSI_ACT_BREAK:
+            case DMVSI_ACT_CONTINUE:
+                for (uint32_t k = depth; k > 0; k--)
+                {
+                    if (stack[k - 1U].kind == 'L')
+                    {
+                        text_fmt(t, "        JMP     .%c%u\n", (a->kind == DMVSI_ACT_BREAK) ? 'b' : 'l',
+                                 (unsigned)stack[k - 1U].label);
+                        break;
+                    }
+                }
+                break;
+            case DMVSI_ACT_CALL:
+                text_fmt(t, "        CALL    h%u\n", (unsigned)a->handler);
+                break;
+            case DMVSI_ACT_RETURN:
+                text_str(t, "        RET\n");
+                break;
+            default:                                    /* END */
+                if (depth == 0)
+                    break;
+                depth--;
+                if (stack[depth].kind == 'L')
+                    text_fmt(t, "        JMP     .l%u\n.b%u:\n", (unsigned)stack[depth].label, (unsigned)stack[depth].label);
+                else
+                    text_fmt(t, ".%c%u:\n", (stack[depth].kind == 'E') ? 'f' : 'i', (unsigned)stack[depth].label);
                 break;
         }
     }
     text_str(t, "        RET\n");
+}
+
+/* The most CALLs nested from a handler on (an unmade one calls nothing); 0xFF: past the limit */
+static uint32_t call_depth(const writer_t* w, dmvsi_handler_t h, uint32_t depth)
+{
+    if (depth > MAX_CALLS)
+        return 0xFFu;
+    const dmvsi_action_t* actions = NULL;
+    uint32_t count = dmvsi_handler_actions(w->doc, h, &actions), deepest = 0;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (actions[i].kind != DMVSI_ACT_CALL)
+            continue;
+        uint32_t d = 1U + call_depth(w, actions[i].handler, depth + 1U);
+        if (d > deepest)
+            deepest = d;
+    }
+    return deepest;
 }
 
 /* Every animated variable moved toward its target, each frame */
@@ -942,27 +1129,40 @@ static void write_animations(writer_t* w, text_t* t)
     }
 }
 
-/* The variables (after the code: the positions are known), the timer of the animations */
+/* The variables (after the code: the positions are known), the timers, the handler run first */
 static void declare_behaviour(writer_t* w, text_t* t)
 {
-    if (w->var_count == 0)
+    uint16_t ms = 0;
+    dmvsi_handler_t h = 0;
+    bool timers = dmvsi_timer_at(w->doc, 0, &ms, &h);
+    if (w->var_count == 0 && !timers && dmvsi_init_handler(w->doc) == 0)
         return;
     text_str(t, "\n");
     for (uint32_t i = 0; i < w->var_count; i++)
     {
-        const char* name = NULL;
-        int32_t initial = 0;
-        (void)dmvsi_var_at(w->doc, i, &name, &initial);
-        text_fmt(t, ".var    $%s, int, %d\n", name, (int)view_value(w, (dmvsi_var_t)(i + 1U), initial));
+        dmvsi_var_info_t info;
+        (void)dmvsi_var_info(w->doc, (dmvsi_var_t)(i + 1U), &info);
+        if (info.kind == DMVSI_VAR_TEXT)
+        {
+            text_fmt(t, ".var    $%s, str[%u], ", info.name, (unsigned)info.size);
+            text_string(t, info.text, strlen(info.text));
+            text_str(t, "\n");
+            continue;
+        }
+        text_fmt(t, ".var    $%s, int, %d\n", info.name, (int)view_value(w, (dmvsi_var_t)(i + 1U), info.initial));
         if (w->vars[i].animated)
         {
             static const char suffixes[6][6] = { "_from", "_to", "_t0", "_dur", "_ease", "_on" };
             for (uint32_t k = 0; k < 6U; k++)
-                text_fmt(t, ".var    $%s%s, int, 0\n", name, suffixes[k]);
+                text_fmt(t, ".var    $%s%s, int, 0\n", info.name, suffixes[k]);
         }
     }
     if (w->animates)
         text_str(t, ".var    $anim_p, int, 0\n.var    $anim_e, int, 0\n.timer  16, animate\n");
+    for (uint32_t i = 0; dmvsi_timer_at(w->doc, i, &ms, &h); i++)
+        text_fmt(t, ".timer  %u, h%u\n", (unsigned)ms, (unsigned)h);
+    if (dmvsi_init_handler(w->doc) != 0)
+        text_fmt(t, ".init   h%u\n", (unsigned)dmvsi_init_handler(w->doc));
 }
 
 /* The variables the handlers animate */
@@ -1010,6 +1210,17 @@ static int write_view(writer_t* w, const char* output, const char* source)
         memset(w->vars, 0, w->var_count * sizeof(var_info_t));
     }
     find_animations(w);
+    for (dmvsi_handler_t h = 1; ; h++)
+    {
+        const dmvsi_action_t* actions = NULL;
+        if (dmvsi_handler_actions(w->doc, h, &actions) == 0 && actions == NULL)
+            break;
+        if (call_depth(w, h, 0) >= MAX_CALLS)
+        {
+            DMOD_LOG_ERROR("todmvs: handler %u calls more than %u deep (dmview's stack)\n", (unsigned)h, (unsigned)MAX_CALLS);
+            return -E2BIG;
+        }
+    }
     const dmvsi_node_t* previous = NULL;
     find_merges(w, root->first, &previous);
     box_t screen = { 0, 0, width, height };
