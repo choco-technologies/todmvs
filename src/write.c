@@ -920,10 +920,58 @@ static void operand(const writer_t* w, const dmvsi_action_t* a, text_t* out)
         text_fmt(out, "%d", (int)view_value(w, a->var, a->value));
 }
 
+#define TEXT_PIECE      48u             /* Bytes of a text operand on one line (escaped: 4 times as many at most) */
+
+/* Where a text is cut at `max` bytes or less, not in a character */
+static size_t text_cut(const char* s, size_t length, size_t max)
+{
+    if (length <= max)
+        return length;
+    size_t n = max;
+    while (n > 0 && ((uint8_t)s[n] & 0xC0u) == 0x80u)
+        n--;
+    return n;
+}
+
+static void var_op(writer_t* w, text_t* t, const char* mnemonic, const dmvsi_action_t* a);
+
+/*
+ * A text operand: as much as the variable holds (the view cuts it there too),
+ * and on lines of their length - SET (or APPEND) its first piece, APPEND the
+ * others
+ */
+static bool long_text_op(writer_t* w, text_t* t, const char* mnemonic, const dmvsi_action_t* a)
+{
+    dmvsi_var_info_t info;
+    if (a->operand != 0 || a->text == NULL || dmvsi_var_info(w->doc, a->var, &info) != 0 || info.kind != DMVSI_VAR_TEXT)
+        return false;
+    size_t length = text_cut(a->text, strlen(a->text), info.size);
+    if (length <= TEXT_PIECE && length == strlen(a->text))
+        return false;
+    char piece[TEXT_PIECE + 1U];
+    dmvsi_action_t p = *a;
+    p.text = piece;
+    for (size_t at = 0; at < length || at == 0; )
+    {
+        size_t n = text_cut(a->text + at, length - at, TEXT_PIECE);
+        if (n == 0 && length - at > 0)
+            n = 1;                                  /* (a malformed character: on) */
+        memcpy(piece, a->text + at, n);
+        piece[n] = '\0';
+        var_op(w, t, (at == 0) ? mnemonic : "APPEND", &p);
+        at += n;
+        if (n == 0)
+            break;
+    }
+    return true;
+}
+
 /* "        <mnemonic> $<var>, <operand>" */
 static void var_op(writer_t* w, text_t* t, const char* mnemonic, const dmvsi_action_t* a)
 {
     static const char spaces[] = "        ";
+    if (long_text_op(w, t, mnemonic, a))
+        return;
     size_t n = strlen(mnemonic);
     text_add(t, spaces, 8);
     text_add(t, mnemonic, n);
