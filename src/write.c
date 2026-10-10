@@ -527,7 +527,7 @@ static void write_image(writer_t* w, const dmvsi_image_t* im, const box_t* origi
         stem = sizeof(stem_name) - 1U;
     memcpy(stem_name, base, stem);
     stem_name[stem] = '\0';
-    int32_t iw = snap(im->width), ih = snap(im->height), blur = snap(im->blur);
+    int32_t iw = snap(im->width), ih = snap(im->height), blur = snap(im->blur), radius = snap(im->radius);
     if (iw > 0 && ih > 0 && blur > 0)
         Dmod_SnPrintf(name, sizeof(name), "%s-%dx%d-b%d", stem_name, (int)iw, (int)ih, (int)blur);
     else if (iw > 0 && ih > 0)
@@ -536,13 +536,34 @@ static void write_image(writer_t* w, const dmvsi_image_t* im, const box_t* origi
         Dmod_SnPrintf(name, sizeof(name), "%s-b%d", stem_name, (int)blur);
     else
         Dmod_SnPrintf(name, sizeof(name), "%s", stem_name);
+
+    /* In a rounded box: what of it is shown (as it is placed in the rectangle), its corners rounded */
+    image_shape_t shape;
+    memset(&shape, 0, sizeof(shape));
+    shape.width = (uint32_t)((iw > 0) ? iw : 0);
+    shape.height = (uint32_t)((ih > 0) ? ih : 0);
+    shape.blur = (uint32_t)((blur > 0) ? blur : 0);
+    box_t shown = snap_rect(&im->rect);
+    int32_t rw = shown.x1 - shown.x0, rh = shown.y1 - shown.y0;
+    if (radius > 0 && iw > 0 && ih > 0 && rw > 0 && rh > 0)
+    {
+        int32_t cw = (iw < rw) ? iw : rw, ch = (ih < rh) ? ih : rh;
+        int32_t cx = (im->flags & DMVSI_IMAGE_CENTER) ? (iw - cw) / 2 : (im->flags & DMVSI_IMAGE_RIGHT) ? iw - cw : 0;
+        int32_t cy = (im->flags & DMVSI_IMAGE_MIDDLE) ? (ih - ch) / 2 : (im->flags & DMVSI_IMAGE_BOTTOM) ? ih - ch : 0;
+        shape.crop[0] = (uint32_t)cx;
+        shape.crop[1] = (uint32_t)cy;
+        shape.crop[2] = (uint32_t)cw;
+        shape.crop[3] = (uint32_t)ch;
+        shape.radius = (uint32_t)radius;
+        size_t n = strlen(name);
+        Dmod_SnPrintf(name + n, sizeof(name) - n, "-k%d-%d-%dx%d-r%d", (int)cx, (int)cy, (int)cw, (int)ch, (int)radius);
+    }
     if (!w->no_assets && w->error == 0)
     {
         Dmod_SnPrintf(copy, sizeof(copy), "%s/%s", w->dir, base);
         int ret = copy_file(im->path, copy);
         if (ret == 0)
-            ret = image_section(w->dir, dmvsi_view_name(w->doc), im->path, name, (uint32_t)((iw > 0) ? iw : 0),
-                                (uint32_t)((ih > 0) ? ih : 0), (uint32_t)((blur > 0) ? blur : 0));
+            ret = image_section(w->dir, dmvsi_view_name(w->doc), im->path, name, &shape);
         if (ret != 0)
         {
             DMOD_LOG_ERROR("todmvs: cannot copy the image %s\n", im->path);

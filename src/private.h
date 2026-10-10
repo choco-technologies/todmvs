@@ -81,8 +81,17 @@ void    uses_free(font_use_t* uses, uint32_t count);
 void    font_spec(dmvsi_font_t font, char* spec, size_t size);
 int     write_fonts(dmvsi_doc_t doc, const char* dir, const char* view, const font_use_t* uses);
 int     copy_file(const char* from, const char* to);
+/* What a view draws of an image: its size, blur, the part of it shown (crop: x, y, w, h; w 0: all), its corners */
+typedef struct
+{
+    uint32_t    width, height;
+    uint32_t    blur;
+    uint32_t    crop[4];
+    uint32_t    radius;
+} image_shape_t;
+
 int     image_section(const char* dir, const char* view, const char* image, const char* name,
-                      uint32_t width, uint32_t height, uint32_t blur);   /* A size of an image in its .ini */
+                      const image_shape_t* shape);                      /* A size of an image in its .ini */
 void    dir_of(const char* path, char* dir, size_t size);
 const char* base_name(const char* path);
 
