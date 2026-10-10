@@ -395,6 +395,9 @@ DMOD_TEST_STEP(libtodmvs_writes_code)
     dmvsi_handler_t step = dmvsi_add_handler(doc, tick, 8);
     dmvsi_action_t text[4];
     text[0] = act(DMVSI_ACT_FORMAT, label, speed, 0, "%d");
+    dmvsi_var_t since = dmvsi_add_var(doc, "since", 0);
+    dmvsi_action_t now = act(DMVSI_ACT_SET, since, DMVSI_VAR_TIME, 0, NULL);
+    DMOD_TEST_EXPECT_TRUE(dmvsi_add_handler(doc, &now, 1) != 0);
     text[1] = act(DMVSI_ACT_APPEND, label, 0, 0, " km/h");
     text[2] = act(DMVSI_ACT_SET, bar, speed, 0, NULL);
     text[3] = act(DMVSI_ACT_LOOP, 0, 0, 0, NULL);
@@ -441,7 +444,8 @@ DMOD_TEST_STEP(libtodmvs_writes_code)
 
     const char* v = read_file(TEST_FILE("speed.dmvs"));
     DMOD_TEST_EXPECT_TRUE(has(v, ".var    $label, str[12], \"0 km/h\"\n"));
-    DMOD_TEST_EXPECT_TRUE(has(v, ".timer  35, h2\n.init   h1\n"));               /* show is h1: made first */
+    DMOD_TEST_EXPECT_TRUE(has(v, ".timer  35, h2\n.init   h1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h3:\n        SET     $since, $time\n"));               /* show is h1: made first */
     DMOD_TEST_EXPECT_TRUE(has(v, "BOX     @bar, 0, 30, $bar, 10, OPAQUE\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, ", $label, inter_regular_16, #FFFFFF, CENTER|TOP\n"));
     DMOD_TEST_EXPECT_TRUE(has(v, "h2:\n        ADD     $speed, 2\n        JLT     $speed, 68, .i1\n        SET     $speed, 68\n"

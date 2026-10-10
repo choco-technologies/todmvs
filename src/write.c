@@ -837,6 +837,8 @@ static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* ori
 
 static const char* var_name(const writer_t* w, dmvsi_var_t var)
 {
+    if (var == DMVSI_VAR_TIME)
+        return "time";                              /* dmview's $time */
     const char* name = "?";
     (void)dmvsi_var_at(w->doc, var - 1U, &name, NULL);
     return name;
