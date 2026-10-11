@@ -370,6 +370,52 @@ static dmvsi_action_t act(uint8_t kind, dmvsi_var_t var, dmvsi_var_t operand, in
     return a;
 }
 
+DMOD_TEST_STEP(libtodmvs_writes_the_channel)
+{
+    /* A player's view: its title and position set by the application, events back to it */
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "player", 100, 40);
+    dmvsi_var_t title = dmvsi_add_text_var(doc, "title", 24, "-");
+    dmvsi_var_t pos = dmvsi_add_var(doc, "pos", 0);
+    dmvsi_var_t moves = dmvsi_add_var(doc, "moves", 0);
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_prop(doc, title, "title"), 0);
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_prop(doc, pos, "player.position"), 0);
+
+    dmvsi_action_t moved = act(DMVSI_ACT_ADD, moves, 0, 1, NULL);
+    dmvsi_handler_t on_pos = dmvsi_add_handler(doc, &moved, 1);
+    DMOD_TEST_EXPECT_EQ(dmvsi_on_change(doc, pos, on_pos), 0);
+    dmvsi_action_t emits[2];
+    emits[0] = act(DMVSI_ACT_EMIT, 0, 0, 0, "next");
+    emits[1] = act(DMVSI_ACT_EMIT, 0, moves, 0, "seek");
+    dmvsi_handler_t clicked = dmvsi_add_handler(doc, emits, 2);
+    DMOD_TEST_EXPECT_TRUE(clicked != 0);
+
+    dmvsi_group_t group;
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.name = "next";
+    rect(&group.rect, 0, 0, 40, 40);
+    (void)dmvsi_begin_group(doc, &group);
+    DMOD_TEST_EXPECT_EQ(dmvsi_on_click(doc, clicked), 0);
+    dmvsi_fill_t fill;
+    memset(&fill, 0, sizeof(fill));
+    rect(&fill.rect, 0, 0, 40, 40);
+    fill.paint.color = 0xFF3B82F6u;
+    (void)dmvsi_add_fill(doc, &fill);
+    (void)dmvsi_end_group(doc);
+
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("player.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("player.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".prop   $title, str[24], \"-\", \"title\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".prop   $pos, int, 0, \"player.position\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $moves, int, 0\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".change $pos, h1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "h2:\n        EMIT    \"next\", 0\n        EMIT    \"seek\", $moves\n        RET\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("player.dmvs"), TEST_FILE("player.dmv")));
+}
+
 DMOD_TEST_STEP(libtodmvs_writes_code)
 {
     /* A speedometer: every 35 ms 2 km/h more up to 68 - its text and a bar as wide as the speed */
