@@ -40,6 +40,10 @@ Both run on a PC (at build time) and on a device.
   frame (`.timer 16`) along its CSS easing - a `cubic-bezier` made 16 lines.
   A group shown on conditions is jumped over otherwise (`JNE $v, 1, ...`,
   `$box.pressed` for a pressed look).
+- **The channel**: a property of the document is a `.prop` (the application
+  that shows the view sets and reads it by its name), its change handlers
+  `.change`, an event `EMIT "name", value` - see dmview's "The channel of a
+  claim".
 - A clip as large as what clips already (the screen) is no box; a box that
   moves stays `OPAQUE` - dmview draws nothing beneath it.
 - A translucent fill right over an opaque one of its rectangle is one opaque

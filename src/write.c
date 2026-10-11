@@ -1062,6 +1062,17 @@ static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
             case DMVSI_ACT_MIN: var_op(w, t, "MIN", a); break;
             case DMVSI_ACT_MAX: var_op(w, t, "MAX", a); break;
             case DMVSI_ACT_APPEND: var_op(w, t, "APPEND", a); break;
+            case DMVSI_ACT_EMIT:
+                /* An event for the application that shows the view */
+                text_str(t, "        EMIT    ");
+                text_string(t, a->text, strlen(a->text));
+                if (a->operand == DMVSI_VAR_TIME)
+                    text_str(t, ", $time\n");
+                else if (a->operand != 0)
+                    text_fmt(t, ", $%s\n", var_name(w, a->operand));
+                else
+                    text_fmt(t, ", %d\n", (int)a->value);
+                break;
             case DMVSI_ACT_FORMAT:
                 text_fmt(t, "        FORMAT  $%s, ", name);
                 text_string(t, a->text, strlen(a->text));
@@ -1213,14 +1224,28 @@ static void declare_behaviour(writer_t* w, text_t* t)
     {
         dmvsi_var_info_t info;
         (void)dmvsi_var_info(w->doc, (dmvsi_var_t)(i + 1U), &info);
+        /* A property: the application that shows the view knows it by its name */
+        const char* prop = dmvsi_var_prop(w->doc, (dmvsi_var_t)(i + 1U));
         if (info.kind == DMVSI_VAR_TEXT)
         {
-            text_fmt(t, ".var    $%s, str[%u], ", info.name, (unsigned)info.size);
+            text_fmt(t, "%s $%s, str[%u], ", (prop != NULL) ? ".prop  " : ".var   ", info.name, (unsigned)info.size);
             text_string(t, info.text, strlen(info.text));
+            if (prop != NULL)
+            {
+                text_str(t, ", ");
+                text_string(t, prop, strlen(prop));
+            }
             text_str(t, "\n");
             continue;
         }
-        text_fmt(t, ".var    $%s, int, %d\n", info.name, (int)view_value(w, (dmvsi_var_t)(i + 1U), info.initial));
+        text_fmt(t, "%s $%s, int, %d", (prop != NULL) ? ".prop  " : ".var   ", info.name,
+                 (int)view_value(w, (dmvsi_var_t)(i + 1U), info.initial));
+        if (prop != NULL)
+        {
+            text_str(t, ", ");
+            text_string(t, prop, strlen(prop));
+        }
+        text_str(t, "\n");
         if (w->vars[i].animated)
         {
             static const char suffixes[6][6] = { "_from", "_to", "_t0", "_dur", "_ease", "_on" };
@@ -1234,6 +1259,9 @@ static void declare_behaviour(writer_t* w, text_t* t)
         text_fmt(t, ".timer  %u, h%u\n", (unsigned)ms, (unsigned)h);
     if (dmvsi_init_handler(w->doc) != 0)
         text_fmt(t, ".init   h%u\n", (unsigned)dmvsi_init_handler(w->doc));
+    dmvsi_var_t changed = 0;
+    for (uint32_t i = 0; dmvsi_change_at(w->doc, i, &changed, &h); i++)
+        text_fmt(t, ".change $%s, h%u\n", var_name(w, changed), (unsigned)h);
 }
 
 /* The variables the handlers animate */
