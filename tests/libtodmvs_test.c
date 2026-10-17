@@ -436,6 +436,32 @@ static dmvsi_action_t act(uint8_t kind, dmvsi_var_t var, dmvsi_var_t operand, in
     return a;
 }
 
+/* A text a handler fills in: empty at first, written all the same */
+DMOD_TEST_STEP(libtodmvs_writes_a_text_empty_until_it_is_set)
+{
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "status", 100, 40);
+    dmvsi_var_t status = dmvsi_add_text_var(doc, "status", 24, "");
+    dmvsi_text_t t;
+    memset(&t, 0, sizeof(t));
+    t.font = dmvsi_font(doc, INTER, 12, 0, NULL);
+    t.x = DMVSI_PX(4);
+    t.baseline = DMVSI_PX(20);
+    t.text = "";
+    t.chars = "0123456789/ Okadi";
+    t.var = status;
+    t.width = DMVSI_PX(60);
+    t.paint.color = 0xFF64748Bu;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_text(doc, &t), 0);
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("status.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("status.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $status, str[24], \"\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ", $status, "));                       /* Its TEXT */
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("status.dmvs"), TEST_FILE("status.dmv")));
+}
+
 DMOD_TEST_STEP(libtodmvs_writes_the_channel)
 {
     /* A player's view: its title and position set by the application, events back to it */

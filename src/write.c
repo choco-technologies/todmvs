@@ -910,8 +910,8 @@ static void write_nodes(writer_t* w, const dmvsi_node_t* first, const box_t* ori
                 write_shadow(w, &n->u.shadow, origin, clip);
                 continue;
             case DMVSI_NODE_TEXT:
-                if (!paint_visible(&n->u.text.paint) || n->u.text.length == 0)
-                    break;
+                if (!paint_visible(&n->u.text.paint) || (n->u.text.length == 0 && n->u.text.var == 0))
+                    break;                              /* (a variable's: empty only until it is set) */
                 write_text(w, &n->u.text, origin);
                 w->r.instructions++;
                 continue;
