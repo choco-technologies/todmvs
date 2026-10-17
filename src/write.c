@@ -64,6 +64,7 @@ typedef struct
     font_use_t*             uses;               /* ... what the view draws with it */
     uint32_t                font_count;
     char                  (*boxes)[MAX_NAME];  /* Box names used */
+    const char**            box_groups;         /* ... the name of the group each is (NULL: none) - SCROLL_Y's */
     uint32_t                box_count;
     const char*             dir;
     bool                    no_assets;
@@ -135,7 +136,19 @@ static const char* box_name(writer_t* w, const char* name)
         }
     }
     strcpy(w->boxes[w->box_count], unique);
+    w->box_groups[w->box_count] = name;
     return w->boxes[w->box_count++];
+}
+
+/* The box of the group named `name` (written before the handlers), NULL: none */
+static const char* group_box(const writer_t* w, const char* name)
+{
+    for (uint32_t i = 0; i < w->box_count && name != NULL; i++)
+    {
+        if (w->box_groups[i] != NULL && strcmp(w->box_groups[i], name) == 0)
+            return w->boxes[i];
+    }
+    return NULL;
 }
 
 static int name_fonts(writer_t* w)
@@ -700,7 +713,7 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
     /* A clip as large as what clips already (the screen, its box) clips nothing: no box for it */
     box_t given = snap_rect(&g->rect);
     bool needless = clips && box_covers(&given, clip) && box_covers(&given, origin);
-    if ((!clips || needless) && g->opacity == 255 && !scrolls && !bound && n->click == 0)
+    if ((!clips || needless) && g->opacity == 255 && !scrolls && !bound && n->click == 0 && n->scrolled == 0)
     {
         write_nodes(w, n->first, origin, clip);
         return;
@@ -774,6 +787,11 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
     {
         op(w, "ON");
         text_fmt(&w->code, "CLICK, h%u\n", (unsigned)n->click);
+    }
+    if (n->scrolled != 0 && scrolls)
+    {
+        op(w, "ON");
+        text_fmt(&w->code, "SCROLLED, h%u\n", (unsigned)n->scrolled);
     }
     write_nodes(w, n->first, &rect, &inside);
     text_str(&w->code, "        END\n");
@@ -860,6 +878,8 @@ static const char* var_name(const writer_t* w, dmvsi_var_t var)
 {
     if (var == DMVSI_VAR_TIME)
         return "time";                              /* dmview's $time */
+    if (var == DMVSI_VAR_SCROLL_Y)
+        return "box.sy";                            /* ... $box.sy, in a SCROLLED handler its box's */
     const char* name = "?";
     (void)dmvsi_var_at(w->doc, var - 1U, &name, NULL);
     return name;
@@ -1073,6 +1093,22 @@ static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
                 else
                     text_fmt(t, ", %d\n", (int)a->value);
                 break;
+            case DMVSI_ACT_SCROLL_Y:
+            {
+                /* A group's box scrolled: SCROLLTO it (written: its box is known by now) */
+                const char* box = group_box(w, a->text);
+                if (box == NULL)
+                {
+                    DMOD_LOG_WARN("todmvs: no box of %s to scroll - left out\n", a->text);
+                    break;
+                }
+                text_fmt(t, "        SCROLLTO @%s, 0, ", box);
+                if (a->operand != 0)
+                    text_fmt(t, "$%s\n", var_name(w, a->operand));
+                else
+                    text_fmt(t, "%d\n", (int)a->value);       /* (pixels: no variable to map it by) */
+                break;
+            }
             case DMVSI_ACT_FORMAT:
                 text_fmt(t, "        FORMAT  $%s, ", name);
                 text_string(t, a->text, strlen(a->text));
@@ -1383,11 +1419,12 @@ dmod_libtodmvs_api_declaration(1.0, int, _write, ( dmvsi_doc_t doc, const char* 
     memset(w, 0, sizeof(*w));
     w->doc = doc;
     w->boxes = Dmod_Malloc(MAX_BOX_NAMES * MAX_NAME);
+    w->box_groups = Dmod_Malloc(MAX_BOX_NAMES * sizeof(const char*));
     dir_of(output, dir, sizeof(dir));
     w->dir = dir;
     w->no_assets = options->no_assets;
 
-    int ret = (w->boxes == NULL) ? -ENOMEM : write_view(w, output, options->source);
+    int ret = (w->boxes == NULL || w->box_groups == NULL) ? -ENOMEM : write_view(w, output, options->source);
     if (ret == 0 && !options->no_assets)
         ret = write_fonts(doc, dir, dmvsi_view_name(doc), w->uses);
     if (result != NULL)
@@ -1399,6 +1436,8 @@ dmod_libtodmvs_api_declaration(1.0, int, _write, ( dmvsi_doc_t doc, const char* 
     uses_free(w->uses, w->font_count);
     Dmod_Free(w->vars);
     Dmod_Free(w->boxes);
+    if (w->box_groups != NULL)
+        Dmod_Free(w->box_groups);
     Dmod_Free(w);
     return ret;
 }
