@@ -358,6 +358,72 @@ DMOD_TEST_STEP(libtodmvs_writes_the_sizes_of_images)
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("covers.dmvs"), TEST_FILE("covers.dmv")));
 }
 
+DMOD_TEST_STEP(libtodmvs_writes_images_chosen_while_the_view_runs)
+{
+    void* f = Dmod_FileOpen(TEST_FILE("art.jpg"), "wb");
+    DMOD_TEST_EXPECT_TRUE(f != NULL);
+    if (f == NULL)
+        return;
+    Dmod_FileWrite("jpeg", 1, 4, f);
+    Dmod_FileClose(f);
+    (void)Dmod_FileRemove(TEST_FILE("art.jpg.ini"));
+
+    /* An album cover the application sets: two sizes of it, one twice; the row's of its own */
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "chosen", 100, 80);
+    dmvsi_var_t cover = dmvsi_add_text_var(doc, "cover", 64, "art");
+    dmvsi_var_t row = dmvsi_add_text_var(doc, "row0_cover", 64, "art");
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_prop(doc, cover, "cover"), 0);
+    DMOD_TEST_EXPECT_EQ(dmvsi_set_prop(doc, row, "row0.cover"), 0);
+    dmvsi_image_t im;
+    memset(&im, 0, sizeof(im));
+    im.path = TEST_FILE("art.jpg");
+    im.var = cover;
+    rect(&im.rect, 0, 0, 40, 40);
+    im.width = DMVSI_PX(40);
+    im.height = DMVSI_PX(40);
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);
+    rect(&im.rect, 50, 0, 40, 40);
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);                  /* The same size elsewhere */
+    rect(&im.rect, 0, 0, 100, 80);
+    im.width = DMVSI_PX(100);
+    im.height = DMVSI_PX(100);
+    im.blur = DMVSI_PX(10);
+    im.flags = DMVSI_IMAGE_CENTER | DMVSI_IMAGE_MIDDLE;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);
+    memset(&im, 0, sizeof(im));
+    im.path = TEST_FILE("art.jpg");
+    im.var = row;
+    rect(&im.rect, 0, 50, 20, 20);
+    im.width = DMVSI_PX(20);
+    im.height = DMVSI_PX(20);
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_image(doc, &im), 0);
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("chosen.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("chosen.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".prop   $cover, str[64], \"art\", \"cover\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $cover_i0, str[75], \"art-40x40.dmvi\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $cover_i1, str[81], \"art-100x100-b10.dmvi\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $row0_cover_i2, str[75], \"art-20x20.dmvi\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".prop   $cover_sizes, str[30], \"-40x40.dmvi -100x100-b10.dmvi\", \"cover.sizes\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".prop   $row0_cover_sizes, str[12], \"-20x20.dmvi\", \"row0.cover.sizes\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".change $cover, chosen1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".change $row0_cover, chosen2\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   0, 0, 40, 40, $cover_i0, LEFT|TOP\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   50, 0, 40, 40, $cover_i0, LEFT|TOP\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "IMAGE   0, 0, 100, 80, $cover_i1, CENTER|MIDDLE\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "chosen1:\n"
+                                 "        SET     $cover_i0, $cover\n        APPEND  $cover_i0, \"-40x40.dmvi\"\n"
+                                 "        SET     $cover_i1, $cover\n        APPEND  $cover_i1, \"-100x100-b10.dmvi\"\n"
+                                 "        RET\n"));
+    /* The images it starts with: made at build time, as any other */
+    const char* ini = read_file(TEST_FILE("art.jpg.ini"));
+    DMOD_TEST_EXPECT_TRUE(has(ini, "[art-40x40]\nsize = 40x40\n"));
+    DMOD_TEST_EXPECT_TRUE(has(ini, "[art-100x100-b10]\nsize = 100x100\nblur = 10\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("chosen.dmvs"), TEST_FILE("chosen.dmv")));
+}
+
 static dmvsi_action_t act(uint8_t kind, dmvsi_var_t var, dmvsi_var_t operand, int32_t value, const char* text)
 {
     dmvsi_action_t a;
@@ -368,6 +434,32 @@ static dmvsi_action_t act(uint8_t kind, dmvsi_var_t var, dmvsi_var_t operand, in
     a.value = value;
     a.text = text;
     return a;
+}
+
+/* A text a handler fills in: empty at first, written all the same */
+DMOD_TEST_STEP(libtodmvs_writes_a_text_empty_until_it_is_set)
+{
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "status", 100, 40);
+    dmvsi_var_t status = dmvsi_add_text_var(doc, "status", 24, "");
+    dmvsi_text_t t;
+    memset(&t, 0, sizeof(t));
+    t.font = dmvsi_font(doc, INTER, 12, 0, NULL);
+    t.x = DMVSI_PX(4);
+    t.baseline = DMVSI_PX(20);
+    t.text = "";
+    t.chars = "0123456789/ Okadi";
+    t.var = status;
+    t.width = DMVSI_PX(60);
+    t.paint.color = 0xFF64748Bu;
+    DMOD_TEST_EXPECT_EQ(dmvsi_add_text(doc, &t), 0);
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("status.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("status.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ".var    $status, str[24], \"\"\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, ", $status, "));                       /* Its TEXT */
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("status.dmvs"), TEST_FILE("status.dmv")));
 }
 
 DMOD_TEST_STEP(libtodmvs_writes_the_channel)
