@@ -64,7 +64,7 @@ typedef struct
     font_use_t*             uses;               /* ... what the view draws with it */
     uint32_t                font_count;
     char                  (*boxes)[MAX_NAME];  /* Box names used */
-    const char**            box_groups;         /* ... the name of the group each is (NULL: none) - SCROLL_Y's */
+    const char**            box_groups;         /* ... the name of the group each scrolls (NULL: none) - SCROLL_Y's */
     uint32_t                box_count;
     const char*             dir;
     bool                    no_assets;
@@ -136,11 +136,12 @@ static const char* box_name(writer_t* w, const char* name)
         }
     }
     strcpy(w->boxes[w->box_count], unique);
-    w->box_groups[w->box_count] = name;
+    w->box_groups[w->box_count] = NULL;           /* (a scrolling box's: write_group() names it) */
     return w->boxes[w->box_count++];
 }
 
-/* The box of the group named `name` (written before the handlers), NULL: none */
+/* The scrolling box of the group named `name` (written before the handlers), NULL: none - a group of
+ * an element a script changes is named as the one it scrolls in */
 static const char* group_box(const writer_t* w, const char* name)
 {
     for (uint32_t i = 0; i < w->box_count && name != NULL; i++)
@@ -723,6 +724,8 @@ static void write_group(writer_t* w, const dmvsi_node_t* n, const box_t* origin,
     int32_t v[4] = { rect.x0 - origin->x0, rect.y0 - origin->y0, rect.x1 - rect.x0, rect.y1 - rect.y0 };
     op(w, "BOX");
     text_fmt(&w->code, "@%s, ", box_name(w, g->name));
+    if (scrolls && w->error == 0)
+        w->box_groups[w->box_count - 1U] = g->name;
     for (uint32_t k = 0; k < 2U; k++)
     {
         /* Its position from a variable: relative to this box's parent, as BOX takes it */
