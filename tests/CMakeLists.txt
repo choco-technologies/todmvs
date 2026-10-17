@@ -12,7 +12,7 @@ target_link_libraries(${DMOD_MODULE_NAME} libtodmvs_if)
 
 # dmvsi: the documents written; libtodmv: the views assembled, to check them
 dmod_link_modules(${DMOD_MODULE_NAME}
-    dmvsi@>=0.6.1
+    dmvsi
     libtodmv@>=0.7
 )
 
