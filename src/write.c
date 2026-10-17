@@ -26,6 +26,8 @@
 #define MAX_EASINGS     8u
 #define MAX_CALLS       8u              /* dmview's CALL stack */
 #define MAX_MERGES      64u
+#define MAX_CHOSEN      64u             /* The sizes of the images chosen while the view runs */
+#define MAX_TAIL        (MAX_NAME + 40u)
 
 /* A translucent fill painted right over an opaque one of its rectangle: one opaque fill of both */
 typedef struct
@@ -45,6 +47,18 @@ typedef struct
     int32_t     shift;                  /* X / Y: where the box starts, from its group's rectangle (what it holds) */
     bool        animated;
 } var_info_t;
+
+/*
+ * An image chosen while the view runs (dmvsi_image_t.var): the text variable
+ * that names it, and the end of the name of its file at the size it is drawn
+ * at - "-88x88-k0-0-88x88-r11.dmvi". The view shows the file named by both:
+ * a variable of its own (<var>_i<k>), set when the application sets `var`.
+ */
+typedef struct
+{
+    dmvsi_var_t var;
+    char        tail[MAX_TAIL];
+} chosen_t;
 
 /* A cubic-bezier easing, as the points of its piecewise linear approximation */
 typedef struct
@@ -78,6 +92,8 @@ typedef struct
     merge_t                 merges[MAX_MERGES];
     uint32_t                merge_count;
     uint32_t                show_labels;
+    chosen_t*               chosen;             /* MAX_CHOSEN */
+    uint32_t                chosen_count;
 } writer_t;
 
 /* ---- Names ---- */
@@ -526,6 +542,38 @@ static void write_text(writer_t* w, const dmvsi_text_t* t, const box_t* origin)
                        (t->align == DMVSI_TEXT_CENTER) ? ", CENTER|TOP\n" : ", RIGHT|TOP\n");
 }
 
+/* The variable that shows the image `var` names at `tail` (its index), -1 when there is no room for it */
+static int32_t chosen_of(writer_t* w, dmvsi_var_t var, const char* tail)
+{
+    for (uint32_t k = 0; k < w->chosen_count; k++)
+        if (w->chosen[k].var == var && strcmp(w->chosen[k].tail, tail) == 0)
+            return (int32_t)k;
+    if (w->chosen == NULL && (w->chosen = Dmod_Malloc(MAX_CHOSEN * sizeof(chosen_t))) == NULL)
+    {
+        w->error = -ENOMEM;
+        return -1;
+    }
+    if (w->chosen_count >= MAX_CHOSEN || strlen(tail) >= MAX_TAIL)
+    {
+        DMOD_LOG_ERROR("todmvs: more than %u sizes of images chosen while the view runs\n", (unsigned)MAX_CHOSEN);
+        w->error = -E2BIG;
+        return -1;
+    }
+    chosen_t* c = &w->chosen[w->chosen_count];
+    c->var = var;
+    strcpy(c->tail, tail);
+    return (int32_t)w->chosen_count++;
+}
+
+/* The first of the chosen images of `var`: what is declared once for the variable */
+static bool first_chosen(const writer_t* w, uint32_t k)
+{
+    for (uint32_t i = 0; i < k; i++)
+        if (w->chosen[i].var == w->chosen[k].var)
+            return false;
+    return true;
+}
+
 /*
  * The image next to the view, and the section of its .ini dmod makes the
  * .dmvi of: <name> at its own size, <name>-<w>x<h>[-b<blur>] scaled (and
@@ -592,7 +640,11 @@ static void write_image(writer_t* w, const dmvsi_image_t* im, const box_t* origi
     numbers(w, v, 4);
     text_str(&w->code, ", ");
     strcat(name, ".dmvi");
-    text_string(&w->code, name, strlen(name));
+    int32_t k = (im->var != 0) ? chosen_of(w, im->var, name + strlen(stem_name)) : -1;
+    if (k >= 0)
+        text_fmt(&w->code, "$%s_i%d", var_name(w, im->var), (int)k);
+    else
+        text_string(&w->code, name, strlen(name));
     if (mask)
     {
         text_str(&w->code, ", ");
@@ -1250,6 +1302,73 @@ static void write_animations(writer_t* w, text_t* t)
     }
 }
 
+/*
+ * The images chosen while the view runs: a variable of each size - the
+ * name of the file the view shows, the variable's text and the size's end -,
+ * and, for the application, what it makes of an image it names: the
+ * property <name>.sizes, the ends of the files' names one after another
+ * ("-88x88-k0-0-88x88-r11.dmvi -430x430-b40.dmvi", see write_image()).
+ */
+static void declare_chosen(writer_t* w, text_t* t)
+{
+    char initial[1024];
+    for (uint32_t k = 0; k < w->chosen_count; k++)
+    {
+        const chosen_t* c = &w->chosen[k];
+        dmvsi_var_info_t info;
+        (void)dmvsi_var_info(w->doc, c->var, &info);
+        size_t size = (size_t)info.size + strlen(c->tail);
+        if (size > sizeof(initial) - 1U)
+            size = sizeof(initial) - 1U;
+        Dmod_SnPrintf(initial, sizeof(initial), "%s%s", info.text, c->tail);
+        text_fmt(t, ".var    $%s_i%u, str[%u], ", info.name, (unsigned)k, (unsigned)size);
+        text_string(t, initial, strlen(initial));
+        text_str(t, "\n");
+    }
+    for (uint32_t k = 0; k < w->chosen_count; k++)
+    {
+        const char* prop = dmvsi_var_prop(w->doc, w->chosen[k].var);
+        if (!first_chosen(w, k) || prop == NULL)
+            continue;
+        text_t sizes = { 0 };
+        for (uint32_t i = k; i < w->chosen_count; i++)
+        {
+            if (w->chosen[i].var != w->chosen[k].var)
+                continue;
+            if (sizes.size != 0)
+                text_str(&sizes, " ");
+            text_str(&sizes, w->chosen[i].tail);
+        }
+        text_fmt(t, ".prop   $%s_sizes, str[%u], ", var_name(w, w->chosen[k].var), (unsigned)(sizes.size + 1U));
+        text_string(t, (sizes.data != NULL) ? sizes.data : "", sizes.size);
+        text_fmt(t, ", \"%s.sizes\"\n", prop);
+        t->failed = t->failed || sizes.failed;
+        text_free(&sizes);
+    }
+}
+
+/* What the application set names: each size's file */
+static void write_chosen(writer_t* w, text_t* t)
+{
+    for (uint32_t k = 0; k < w->chosen_count; k++)
+    {
+        if (!first_chosen(w, k))
+            continue;
+        dmvsi_var_t var = w->chosen[k].var;
+        const char* name = var_name(w, var);
+        text_fmt(t, "\nchosen%u:\n", (unsigned)var);
+        for (uint32_t i = k; i < w->chosen_count; i++)
+        {
+            if (w->chosen[i].var != var)
+                continue;
+            text_fmt(t, "        SET     $%s_i%u, $%s\n        APPEND  $%s_i%u, ", name, (unsigned)i, name, name, (unsigned)i);
+            text_string(t, w->chosen[i].tail, strlen(w->chosen[i].tail));
+            text_str(t, "\n");
+        }
+        text_str(t, "        RET\n");
+    }
+}
+
 /* The variables (after the code: the positions are known), the timers, the handler run first */
 static void declare_behaviour(writer_t* w, text_t* t)
 {
@@ -1292,6 +1411,7 @@ static void declare_behaviour(writer_t* w, text_t* t)
                 text_fmt(t, ".var    $%s%s, int, 0\n", info.name, suffixes[k]);
         }
     }
+    declare_chosen(w, t);
     if (w->animates)
         text_str(t, ".var    $anim_p, int, 0\n.var    $anim_e, int, 0\n.timer  16, animate\n");
     for (uint32_t i = 0; dmvsi_timer_at(w->doc, i, &ms, &h); i++)
@@ -1301,6 +1421,11 @@ static void declare_behaviour(writer_t* w, text_t* t)
     dmvsi_var_t changed = 0;
     for (uint32_t i = 0; dmvsi_change_at(w->doc, i, &changed, &h); i++)
         text_fmt(t, ".change $%s, h%u\n", var_name(w, changed), (unsigned)h);
+    for (uint32_t k = 0; k < w->chosen_count; k++)
+    {
+        if (first_chosen(w, k))
+            text_fmt(t, ".change $%s, chosen%u\n", var_name(w, w->chosen[k].var), (unsigned)w->chosen[k].var);
+    }
 }
 
 /* The variables the handlers animate */
@@ -1400,6 +1525,7 @@ static int write_view(writer_t* w, const char* output, const char* source)
     }
     if (w->animates)
         write_animations(w, &t);
+    write_chosen(w, &t);
     ret = (t.failed || w->code.failed) ? -ENOMEM : text_save(&t, output) ? 0 : -EIO;
     text_free(&t);
     return ret;
@@ -1438,6 +1564,7 @@ dmod_libtodmvs_api_declaration(1.0, int, _write, ( dmvsi_doc_t doc, const char* 
     Dmod_Free(w->fonts);
     uses_free(w->uses, w->font_count);
     Dmod_Free(w->vars);
+    Dmod_Free(w->chosen);
     Dmod_Free(w->boxes);
     if (w->box_groups != NULL)
         Dmod_Free(w->box_groups);
