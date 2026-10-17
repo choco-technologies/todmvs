@@ -62,6 +62,19 @@ own size, `photo-140x93` scaled, `photo-480x320-b20` scaled and blurred -
 and named in the view as the `.dmvi` dmod converts each section into
 (dmview draws images unscaled: placed in their rectangle and clipped).
 
+An image the application chooses while the view runs (a document's image
+with a text variable - an album cover; dmvs_html: `data-dmod-src`) cannot
+be made now. The view shows the file its text names with the end of the
+name of each size - `cover` set to `/mnt/sd/.covers/1a2b` shows
+`/mnt/sd/.covers/1a2b-88x88-k0-0-88x88-r11.dmvi` where the image is drawn
+at 88 x 88, cut and rounded -, and the property `<name>.sizes` tells the
+application which files to make: those ends one after another, separated
+by spaces (`-88x88-k0-0-88x88-r11.dmvi -430x430-b40.dmvi`). Each end says
+how its image is made: `-<w>x<h>` scaled to that size, `-b<n>` blurred,
+`-k<x>-<y>-<w>x<h>` cut, `-r<n>` its corners rounded; `.dmvi` alone: at its
+own size. The view starts with the image it names first (`cover`: the
+document's image), made at build time as any other.
+
 The output directory is ready to be one of `DMOD_ASSETS_PATHS`.
 
 ## Usage
