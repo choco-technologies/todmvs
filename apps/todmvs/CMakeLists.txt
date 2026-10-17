@@ -18,5 +18,5 @@ target_link_libraries(${DMOD_MODULE_NAME}
 
 # dmvsi.h, which libtodmvs.h includes
 dmod_link_modules(${DMOD_MODULE_NAME}
-    dmvsi@>=0.6
+    dmvsi
 )
