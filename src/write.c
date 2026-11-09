@@ -933,6 +933,8 @@ static const char* var_name(const writer_t* w, dmvsi_var_t var)
 {
     if (var == DMVSI_VAR_TIME)
         return "time";                              /* dmview's $time */
+    if (var == DMVSI_VAR_SCROLL_X)
+        return "box.sx";                            /* ... $box.sx, likewise */
     if (var == DMVSI_VAR_SCROLL_Y)
         return "box.sy";                            /* ... $box.sy, in a SCROLLED handler its box's */
     const char* name = "?";
@@ -1162,6 +1164,22 @@ static void write_handler(writer_t* w, text_t* t, dmvsi_handler_t h)
                     text_fmt(t, "$%s\n", var_name(w, a->operand));
                 else
                     text_fmt(t, "%d\n", (int)a->value);       /* (pixels: no variable to map it by) */
+                break;
+            }
+            case DMVSI_ACT_SCROLL_X:
+            {
+                /* A group's box scrolled: SCROLLTO it (written: its box is known by now) */
+                const char* box = group_box(w, a->text);
+                if (box == NULL)
+                {
+                    DMOD_LOG_WARN("todmvs: no box of %s to scroll - left out\n", a->text);
+                    break;
+                }
+                text_fmt(t, "        SCROLLTO @%s, ", box);
+                if (a->operand != 0)
+                    text_fmt(t, "$%s, 0\n", var_name(w, a->operand));
+                else
+                    text_fmt(t, "%d, 0\n", (int)a->value);    /* (pixels: no variable to map it by) */
                 break;
             }
             case DMVSI_ACT_FORMAT:

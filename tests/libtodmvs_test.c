@@ -550,6 +550,48 @@ DMOD_TEST_STEP(libtodmvs_writes_scrolling)
     DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("queue.dmvs"), TEST_FILE("queue.dmv")));
 }
 
+DMOD_TEST_STEP(libtodmvs_writes_scrolling_across)
+{
+    /* A pager scrolled across: where it is, scrolled to a page by its handler */
+    dmvsi_doc_t doc = dmvsi_new();
+    (void)dmvsi_set_view(doc, "queue", 100, 40);
+    dmvsi_var_t at = dmvsi_add_var(doc, "at", 0);
+    dmvsi_action_t acts[4];
+    acts[0] = act(DMVSI_ACT_SET, at, DMVSI_VAR_SCROLL_X, 0, NULL);
+    acts[1] = act(DMVSI_ACT_IF_GE, at, 0, 60, NULL);
+    acts[2] = act(DMVSI_ACT_SCROLL_X, 0, 0, 20, "the-list");
+    acts[3] = act(DMVSI_ACT_END, 0, 0, 0, NULL);
+    dmvsi_handler_t scrolled = dmvsi_add_handler(doc, acts, 4);
+    DMOD_TEST_EXPECT_TRUE(scrolled != 0);
+
+    dmvsi_group_t group;
+    memset(&group, 0, sizeof(group));
+    group.opacity = 255;
+    group.flags = DMVSI_GROUP_CLIP;
+    group.name = "the-list";
+    group.scroll_w = DMVSI_PX(200);
+    group.scroll_h = DMVSI_PX(40);
+    rect(&group.rect, 0, 0, 100, 40);
+    (void)dmvsi_begin_group(doc, &group);
+    DMOD_TEST_EXPECT_EQ(dmvsi_on_scroll(doc, scrolled), 0);
+    dmvsi_fill_t fill;
+    memset(&fill, 0, sizeof(fill));
+    rect(&fill.rect, 0, 0, 200, 40);
+    fill.paint.color = 0xFF3B82F6u;
+    (void)dmvsi_add_fill(doc, &fill);
+    (void)dmvsi_end_group(doc);
+
+    DMOD_TEST_EXPECT_EQ(libtodmvs_write(doc, TEST_FILE("queue_x.dmvs"), NULL, NULL), 0);
+    dmvsi_free(doc);
+
+    const char* v = read_file(TEST_FILE("queue_x.dmvs"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "BOX     @the_list, 0, 0, 100, 40"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        ON      SCROLLED, h1\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        SET     $at, $box.sx\n"));
+    DMOD_TEST_EXPECT_TRUE(has(v, "        SCROLLTO @the_list, 20, 0\n"));
+    DMOD_TEST_EXPECT_TRUE(assembles(TEST_FILE("queue_x.dmvs"), TEST_FILE("queue_x.dmv")));
+}
+
 DMOD_TEST_STEP(libtodmvs_writes_code)
 {
     /* A speedometer: every 35 ms 2 km/h more up to 68 - its text and a bar as wide as the speed */
